@@ -1,0 +1,2060 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,viewport-fit=cover,user-scalable=no">
+<!-- 状态栏/浏览器 UI 颜色必须等于页面「最顶部」的实际底色。
+     页面底色是 body 上那条从上往下的径向渐变，顶端是 --bgTop(#121722)，
+     而不是 --bg(#0a0c10)。之前这里填的是 --bg，于是状态栏比页面顶部暗一截，
+     看起来就是「状态栏和背景不是一个颜色」。
+     改 --bgTop 时这个值必须同步改（meta 里不能用 var）。 -->
+<meta name="theme-color" content="#121722">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="mobile-web-app-capable" content="yes">
+<!-- PWA：遥控器图案桌面图标 + 独立窗口 -->
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="电视遥控">
+<!-- 界面版本：服务端读这个值放在 /api/health 里，用来核对 NAS 上跑的是哪一版界面 -->
+<meta name="app-ver" content="2026-11-11.4">
+<!-- 三重保险：服务端已经发 no-store，但 iOS「添加到主屏幕」的独立窗口
+     偶尔会忽略响应头直接复用缓存页面，这里再从文档内部声明一次 -->
+<meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>电视遥控</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* 固定尺寸：禁掉双击放大/双指缩放（body 上还有一份，html 这份管文档根） */
+html{
+  touch-action:manipulation;-webkit-text-size-adjust:100%;text-size-adjust:100%;
+  /* 页面底色必须铺到根元素：html 没背景时，独立运行模式下一屏高度不够，
+     底部会露出浏览器默认的白色一条 */
+  background:var(--bg);
+}
+:root{
+  /* --bgTop 是页面最顶端的实际底色（渐变起点）。状态栏 theme-color、
+     顶部毛玻璃哑元素的底色都取它，保证「状态栏 / 页面顶 / 页面底」三者一致。
+     改这里要同步改 <head> 里的 <meta name="theme-color">。 */
+  --bgTop:#121722;
+  --bg:#0a0c10; --card:#14171d; --card2:#1b1f27; --card3:#222732; --line:#252a33;
+  --txt:#e8ecf3; --dim:#8b93a3; --dim2:#5d6577; --accent:#5b8cff; --accent2:#9db6ff;
+  --ok:#35d07f; --rec:#ff5b5b;
+  /* 上边距让开状态栏（独立运行时再多给几像素，别贴到时间/电量上）；
+     下边距按用户要求收到 30px，遇到 iPhone 底部横条时自动让到安全区。
+     顶上这段刻意收得比较紧（20px → 14px）：预览/电源按钮上移，
+     腾出来的空间给顶栏与「信号/设置」之间的间距，避免整页重心下坠。 */
+  --padT:calc(14px + env(safe-area-inset-top,0px));
+  --padB:max(30px,env(safe-area-inset-bottom,0px));
+
+  /* ---------- 统一按键材质：照抄中间 OK 键的观感 ----------
+     实体遥控器上所有按键都是同一块哑光塑料压出来的：表面偏暗、
+     顶部有一道极细的高光、下沿有一圈内阴影，按下才变亮。
+     .dk.ok 原来是唯一这么画的键，现在抽成变量，全站按钮共用，
+     改材质只改这一处。 */
+  --btn-bg:linear-gradient(180deg,#22262b 0%,#191d21 55%,#101216 100%);
+  --btn-shadow:
+    0 0 0 1px rgba(0,0,0,.45),
+    0 2px 4px rgba(0,0,0,.45),
+    inset 0 1px 0 rgba(255,255,255,.09),
+    inset 0 -1px 2px rgba(0,0,0,.4);
+  --btn-bg-act:linear-gradient(180deg,#454b54 0%,#32383f 55%,#202429 100%);
+  --btn-shadow-act:
+    0 0 0 1px rgba(0,0,0,.55),
+    0 1px 3px rgba(0,0,0,.6),
+    inset 0 2px 7px rgba(0,0,0,.55);
+}
+html,body{margin:0;padding:0;min-height:100%}
+body{
+  /* 整体自上而下的竖向渐变：顶端 --bgTop → 底端 --bg。
+     以前这里是 radial-gradient（顶部中间亮、越往两侧越暗），用户要求改成
+     纯竖向渐变。换成 linear-gradient 后有一个额外好处：同一高度上整行颜色
+     完全相同，页面最顶端那一行就是纯 --bgTop，与状态栏的 theme-color
+     (#121722) 严丝合缝——不再需要上一版为径向渐变加的那段「平台期」。
+     用 fixed 让渐变铺满视口而不是随文档高度拉伸：滚动时色带位置稳定，
+     页面再长也不会把过渡拉成一条几乎看不见的细线。 */
+  background:linear-gradient(180deg,var(--bgTop) 0%,var(--bg) 100%) fixed;
+  color:var(--txt);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  display:flex;justify-content:center;align-items:flex-start;
+  /* 两侧各留 26px：内容整体再收窄一档（原 20px），单手握着也不容易误触边缘 */
+  padding:var(--padT) 26px var(--padB);
+  min-height:100vh;min-height:100dvh;
+  user-select:none;touch-action:manipulation;overscroll-behavior:none;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{
+  width:100%;max-width:400px;margin:0 auto;
+  display:flex;flex-direction:column;gap:8px;
+  /* 用 min-height，不再用固定 height —— 这是一次踩坑换来的：
+     固定高度时，视口一变矮（Safari 底部工具栏占掉一截、弹出输入法键盘），
+     flex 就按"负空间"去压中区三行；可 grid-auto-rows 有 50px 下限，
+     行压不下去就溢出网格盒子，直接画在下面的输入区上 ——
+     表现就是"文字输入框和按钮重叠"。
+     改成 min-height 后：视口够高时靠 min-height 撑满一屏、多出来的高度
+     仍然由中区按钮行和输入区上方的 auto 外边距吸收；视口不够高时
+     容器跟着内容长高，页面自然可滚动，任何控件都不会被压变形或叠在一起。 */
+  min-height:calc(100vh - var(--padT) - var(--padB));
+  min-height:calc(100dvh - var(--padT) - var(--padB));
+  max-height:920px;
+}
+/* 独立运行（添加到主屏幕）：状态栏由系统自己占位（status-bar-style=default），
+   页面从状态栏下方开始，所以这里不需要再留一大段净空。
+   原来给的 28px 是配合 black-translucent 时代的补丁，现在会让顶栏整体下坠；
+   收到 16px（比普通网页的 14px 略多一点），预览/电源按钮随之明显上移。
+   毛玻璃兜底由 .tvosd-ios-blur-fix 负责，与这里的间距无关。 */
+@media (display-mode:standalone){
+  :root{--padT:calc(16px + env(safe-area-inset-top,0px))}
+}
+/* 除中区按钮行外，其他区块保持自身高度不被压缩（压了会把文字/圆盘挤变形） */
+.wrap > .authbar,
+.wrap > .topbar,
+.wrap > .sigrow,
+.wrap > .dpadcard,
+.wrap > .inputzone{flex:0 0 auto}
+/* 输入区：吸底。多出来的高度全压在这里上面，页面底部恒定留 30px 空白（--padB） */
+.inputzone{display:flex;flex-direction:column;gap:8px;margin-top:auto}
+
+/* ---------- 顶栏：预览（圆） │ 电视名 + 状态 │ 电源（圆） ----------
+   预览按钮顶到内容左边缘，与下方「信号」按钮的左边缘严格对齐；
+   电源靠右，右边缘与「菜单」对齐；电视名夹在两者之间，空间不够就省略。
+   margin-bottom 是给「顶栏 ↔ 信号/设置」之间的额外留白：.wrap 的 gap 是 8px，
+   再加这一段（合计约 18px），让顶部两颗圆钮和下面的按钮拉开距离，
+   同时配合更小的 --padT 把顶栏整体上移，视觉上不再挤成一片。 */
+.topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:8px;min-height:38px;margin-bottom:10px}
+/* 电视名 + 状态：同一行排布（原来是名字一行、状态一行，按要求压成一行） */
+.title{min-width:0;display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden}
+.title .tname{font-size:13.5px;font-weight:600;letter-spacing:.2px;white-space:nowrap;flex:0 0 auto}
+.title .st{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--dim2);transition:.3s;flex:0 0 auto}
+.dot.on{background:var(--ok);box-shadow:0 0 8px rgba(53,208,127,.7)}
+.dot.off{background:#4a5162}
+.power{
+  width:38px;height:38px;flex:0 0 38px;border-radius:50%;border:1px solid #3a2229;
+  background:linear-gradient(180deg,#2a1519,#1a1013);color:#ff6b6b;display:grid;place-items:center;
+  transition:transform .12s,background .2s;
+}
+.power:active{transform:scale(.9);background:#3a1a20}
+.power.act{
+  transform:scale(.9);background:linear-gradient(180deg,#54222b,#33181e);
+  border-color:#6e3038;box-shadow:inset 0 2px 5px rgba(0,0,0,.6);
+}
+.power.act svg{color:#ffb3b3}
+.power svg{width:17px;height:17px}
+
+/* ---------- 卡片 / 通用 ---------- */
+.card{background:var(--card);border:1px solid var(--line);border-radius:17px;padding:12px}
+/* 圆盘不套卡片：盘面自带阴影，直接浮在背景上更干净；
+   直径随屏宽/屏高一起收，保证整页一屏放得下；
+   上下各收 5px 负边距——两侧按钮靠边后箭头已有避空，圆盘和上下按钮贴得更近 */
+.dpadcard{background:transparent;border:0;padding:0;--dpad:min(56vw,32vh,256px);margin:-5px 0}
+.label{font-size:10.5px;color:var(--dim2);letter-spacing:1.1px;margin:0 0 9px 2px}
+
+/* ---------- 方向键：实体遥控器同款圆盘 ---------- */
+.dpad{
+  position:relative;width:var(--dpad,206px);aspect-ratio:1/1;margin:0 auto;
+  border-radius:50%;border:1px solid rgba(255,255,255,.07);
+  /* 原装索尼遥控器：整块深灰偏黑的哑光盘，没有银色外环，明暗很均匀 */
+  background:
+    radial-gradient(circle at 50% 50%,rgba(255,255,255,0) 0 84%,rgba(255,255,255,.055) 84% 90%,rgba(255,255,255,0) 90%),
+    radial-gradient(circle at 50% 14%,rgba(255,255,255,.04),rgba(255,255,255,0) 32%),
+    radial-gradient(circle at 50% 97%,rgba(255,255,255,.035),rgba(255,255,255,0) 18%),
+    radial-gradient(circle at 50% 26%,#3a3e45 0%,#272b31 36%,#181b1f 68%,#0c0e10 100%);
+  box-shadow:0 12px 26px rgba(0,0,0,.55),
+             inset 0 0 0 1px rgba(255,255,255,.05),
+             inset 0 1px 1px rgba(255,255,255,.18),
+             inset 0 -6px 12px rgba(0,0,0,.66);
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;
+}
+/* 磨砂纹理：实体遥控器表面那层细颗粒 */
+.dpad::before{
+  content:'';position:absolute;inset:0;border-radius:50%;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+/* 中央凹槽：OK 键与外圈之间的那圈缝（上缘背光、下缘受光） */
+.dpad::after{
+  content:'';position:absolute;inset:23.5%;border-radius:50%;pointer-events:none;
+  border-top:1px solid rgba(0,0,0,.55);border-bottom:1px solid rgba(255,255,255,.09);
+  box-shadow:inset 0 1.5px 2px rgba(0,0,0,.6);
+}
+/* 45° 斜线：方向键之间的分界线，从盘面最大外圆一直延伸到第 2 个圆（中央凹槽圈）。
+   用径向 mask 把贯穿圆心的斜线裁成只剩外环那一截（不会伸进 OK 键） */
+.ddiag{
+  position:absolute;inset:0;border-radius:50%;pointer-events:none;z-index:2;
+  background:
+    linear-gradient(45deg,
+      transparent calc(50% - 1.7px),
+      rgba(0,0,0,.66) calc(50% - 1.7px),
+      rgba(0,0,0,.66) calc(50% - .5px),
+      rgba(255,255,255,.1) calc(50% - .5px),
+      rgba(255,255,255,.1) calc(50% + .5px),
+      transparent calc(50% + .5px)),
+    linear-gradient(135deg,
+      transparent calc(50% - 1.7px),
+      rgba(0,0,0,.66) calc(50% - 1.7px),
+      rgba(0,0,0,.66) calc(50% - .5px),
+      rgba(255,255,255,.1) calc(50% - .5px),
+      rgba(255,255,255,.1) calc(50% + .5px),
+      transparent calc(50% + .5px));
+  -webkit-mask-image:radial-gradient(circle at 50% 50%,rgba(0,0,0,0) 0 26.2%,#000 27%);
+  mask-image:radial-gradient(circle at 50% 50%,rgba(0,0,0,0) 0 26.2%,#000 27%);
+}
+.dk{
+  position:absolute;inset:0;border-radius:50%;background:transparent;cursor:pointer;
+  -webkit-tap-highlight-color:transparent;touch-action:none;
+  transition:background .12s,transform .08s,box-shadow .12s;
+}
+/* 压印式三角：颜色贴近盘面，靠上下明暗差做出凹刻感。
+   大小/位置参照原装遥控器实拍（原版约为盘径的 19%×12%，应要求一缩再缩，
+   现为盘径的 10.5%×6.7%），中心落在中心键外缘与盘面外缘的正中间（约 71% 半径处） */
+.dk svg{
+  position:absolute;width:12%;height:12%;color:#bcc3ce;opacity:.88;
+  filter:drop-shadow(0 -1px 0 rgba(0,0,0,.55)) drop-shadow(0 1px 0 rgba(255,255,255,.13));
+  transition:transform .08s,color .1s,opacity .1s;
+}
+.dk.up svg{top:14.5%;left:50%;transform:translate(-50%,-50%)}
+.dk.down svg{top:85.5%;left:50%;transform:translate(-50%,-50%)}
+.dk.left svg{left:14.5%;top:50%;transform:translate(-50%,-50%)}
+.dk.right svg{left:85.5%;top:50%;transform:translate(-50%,-50%)}
+/* 四向热区为扇形，跟真的十字键一样，斜着按也能识别方向 */
+.dk.up{clip-path:polygon(50% 50%,12% 12%,30% 2%,50% 0,70% 2%,88% 12%);--gx:50%;--gy:13%;--pa:#525860;--pb:#3a4048;--pc:#24282d}
+.dk.down{clip-path:polygon(50% 50%,88% 88%,70% 98%,50% 100%,30% 98%,12% 88%);--gx:50%;--gy:87%}
+.dk.left{clip-path:polygon(50% 50%,12% 88%,2% 70%,0 50%,2% 30%,12% 12%);--gx:13%;--gy:50%}
+.dk.right{clip-path:polygon(50% 50%,88% 12%,98% 30%,100% 50%,98% 70%,88% 88%);--gx:87%;--gy:50%}
+/* 方向键按下：整段照搬 OK 键的按下效果——
+   同一套色阶渐变（#454b54 0% / #32383f 55% / #202429 100%）、同一个 inset 0 2px 7px rgba(0,0,0,.55)
+   柔和内阴影、同样比例的 scale(.955)。.dk 本身是 border-radius:50%，所以 inset 阴影顺着圆弧走，
+   和 OK 键键缘的凹陷质感完全一致。
+   两处必要适配：1) 渐变光源从「按钮顶部 50% 28%」换成本方向的盘缘（--gx/--gy），
+   否则下/左/右三个键的可见区域全落在渐变暗部；2) 上键的三种灰各提一档（--pa/--pb/--pc），
+   因为盘面顶部本身就有 #3f4349，用 OK 键原色只会亮 +10，几乎看不出按下 */
+.dk.act{
+  transform:scale(.955);
+  background:radial-gradient(circle at var(--gx) var(--gy),
+    var(--pa,#454b54) 0%,var(--pb,#32383f) 55%,var(--pc,#202429) 100%);
+  box-shadow:inset 0 2px 7px rgba(0,0,0,.55);
+}
+/* 箭头：按下时颜色、透明度、位置一律不动（只有扇形在提亮和微缩，箭头随之一起缩一点点） */
+.dk.act svg{color:#bcc3ce;opacity:.88}
+/* 中央确认键：和外圈同色但更深一档，靠凹槽区分（原装款的样式） */
+.dk.ok{
+  position:absolute;inset:27%;z-index:3;border-radius:50%;
+  display:grid;place-items:center;
+  background:radial-gradient(circle at 50% 30%,#22262b 0%,#191d21 55%,#0f1114 100%);
+  box-shadow:0 0 0 1px rgba(0,0,0,.45),0 2px 4px rgba(0,0,0,.45),
+             inset 0 1px 0 rgba(255,255,255,.09),inset 0 -1px 2px rgba(0,0,0,.4);
+  transition:transform .07s,background .12s,box-shadow .12s;
+}
+/* 商标性的靶心符号：小圆点 + 四条细短芒，整体约中心键的 1/3 */
+.dk.ok svg{
+  width:40%;height:40%;color:#e6ebf2;opacity:.9;position:static;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.6));
+}
+.dk.ok.act{
+  transform:scale(.955);
+  background:radial-gradient(circle at 50% 28%,#454b54 0%,#32383f 55%,#202429 100%);
+  box-shadow:0 0 0 1px rgba(0,0,0,.55),0 1px 3px rgba(0,0,0,.6),inset 0 2px 7px rgba(0,0,0,.55);
+}
+.dk.hide{display:none}
+
+/* 按键网格 */
+.grid{display:grid;gap:7px}
+.c4{grid-template-columns:repeat(4,1fr)}
+.c3{grid-template-columns:repeat(3,1fr)}
+.pill{
+  border:0;background:var(--btn-bg);box-shadow:var(--btn-shadow);border-radius:13px;
+  padding:12px 4px;font-size:12.5px;color:#cfd6e2;display:grid;place-items:center;gap:4px;
+  transition:transform .07s,background .15s,box-shadow .12s;line-height:1.15;text-align:center;
+}
+.pill:active{transform:scale(.955);background:var(--btn-bg-act);box-shadow:var(--btn-shadow-act)}
+/* JS 的 .act 类（pointerdown 期间常驻，触摸设备上比 :active 可靠，因为 start() 里 preventDefault 了）*/
+.pill.act,.vbtn.act{
+  transform:scale(.955);background:var(--btn-bg-act);box-shadow:var(--btn-shadow-act);
+}
+.pill.act svg{opacity:1}
+.pill svg{width:17px;height:17px;opacity:.9}
+.pill.danger{color:#ff8b8b;border-color:#3a2229;background:linear-gradient(180deg,#291519,#1c1215)}
+
+/* 音量 */
+.vbtn{
+  border:1px solid var(--line);background:var(--card2);border-radius:15px;height:54px;
+  display:grid;place-items:center;font-size:21px;font-weight:600;color:#dbe2ee;
+  transition:transform .08s,background .15s;
+}
+.vbtn:active{transform:scale(.93);background:#252c38}
+.vbtn small{font-size:11px;font-weight:400;color:var(--dim)}
+
+/* 语音：材质与 OK 键统一，只保留绿色图标/文字做功能区分 */
+.vhold{
+  height:56px;border-radius:15px;border:0;color:#9de8c1;
+  background:var(--btn-bg);box-shadow:var(--btn-shadow);
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  font-size:14px;font-weight:600;font-family:inherit;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;
+  transition:transform .07s,background .15s,box-shadow .12s,color .15s;
+}
+.vhold svg{width:17px;height:17px}
+.vhold:active,.vhold.act{transform:scale(.955);background:var(--btn-bg-act);box-shadow:var(--btn-shadow-act);color:#c6ffe0}
+
+/* 输入区 */
+.ta{
+  width:100%;background:#0e1117;border:1px solid var(--line);border-radius:13px;
+  padding:10px 12px;color:var(--txt);font-size:14px;outline:none;resize:none;min-height:62px;
+  font-family:inherit;line-height:1.45;-webkit-user-select:text;user-select:text;
+}
+.ta:focus{border-color:#35507f}
+.inrow{display:grid;grid-template-columns:1fr auto auto;gap:7px;margin-top:7px}
+.btn{
+  border:1px solid #31415e;background:linear-gradient(180deg,#243149,#1a2333);
+  color:var(--accent2);border-radius:12px;padding:0 14px;font-size:13px;font-weight:600;height:40px;
+  transition:transform .08s,filter .15s,background .15s,box-shadow .15s;
+}
+.btn:active{transform:scale(.96);background:linear-gradient(180deg,#33456b,#22304a);box-shadow:inset 0 1px 3px rgba(0,0,0,.45)}
+.btn.act{transform:scale(.96);background:linear-gradient(180deg,#33456b,#22304a);box-shadow:inset 0 1px 3px rgba(0,0,0,.45)}
+.btn.ghost:active{background:var(--btn-bg-act);box-shadow:var(--btn-shadow-act)}
+.btn.ghost.act{background:var(--btn-bg-act);box-shadow:var(--btn-shadow-act)}
+.btn.ghost{border:0;background:var(--btn-bg);box-shadow:var(--btn-shadow);color:#cfd6e2;font-weight:400}
+.btn:disabled{opacity:.45}
+.imestat{
+  display:flex;align-items:center;gap:7px;margin-top:9px;padding-top:9px;border-top:1px dashed var(--line);
+  font-size:11.5px;color:var(--dim);flex-wrap:wrap;
+}
+.imestat .k{color:#a7b0c0}
+.imestat .v{color:#8ea3c8}
+.tag{padding:2px 7px;border-radius:6px;font-size:10.5px;border:1px solid var(--line);background:#191d25;color:var(--dim)}
+.tag.ok{color:#63d79b;border-color:#1e4433;background:#122019}
+.imearrow{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
+.imearrow .btn{height:34px;font-size:12px;padding:0 11px}
+
+/* 提示 / 登录 */
+.toast{
+  position:fixed;left:50%;bottom:24px;transform:translate(-50%,16px);
+  background:rgba(28,32,40,.97);border:1px solid var(--line);color:#dfe5ef;
+  padding:10px 15px;border-radius:12px;font-size:12.5px;opacity:0;pointer-events:none;
+  transition:.22s;z-index:120;max-width:88vw;text-align:center;line-height:1.5;
+}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.authbar{
+  display:none;gap:7px;margin-bottom:2px;padding:10px;border:1px solid var(--line);
+  background:var(--card);border-radius:14px;
+}
+.authbar.show{display:flex}
+.authbar input{flex:1;min-width:0;background:#0e1117;border:1px solid var(--line);border-radius:11px;padding:9px 11px;color:var(--txt);font-size:13px;outline:none}
+
+/* ---------- 布局：按手绘遥控器重排 ---------- */
+/* 信号 / 设置：各自靠到左右边缘（与下面两列按钮同一组边缘），
+   中间让出的大片空白正好给方向键上方的箭头避空。
+   这里用与 .midgrid 完全相同的三列模板，两颗按钮的宽度才会和
+   下面的「返回 / 菜单」严格同宽，窄屏下也不会一宽一窄 */
+/* 信号 / 预览徽标 / 设置：三个一排。原来只有信号和设置两颗（中间那一列
+   是故意留空给方向键上键避空的），现在徽标按用户要求搬到框外、落在这排中间。
+   中间列给徽标留宽一点，它要显示 "27 fps · 8~45ms" 这种文字。 */
+.sigrow{display:grid;grid-template-columns:1fr 1.35fr 1fr;gap:12px}
+/* 高度比中区两列略矮（46 vs 50），宽度由列宽决定，靠两侧对齐 */
+.sigrow .pill{
+  display:flex;flex-direction:row;align-items:center;justify-content:center;gap:7px;
+  width:100%;height:52px;padding:0 6px;font-size:12.5px;letter-spacing:.3px;
+}
+.sigrow .pill svg{width:17px;height:17px}
+/* 设置显式占第 3 列：三列网格只放两个按钮时，自动放置会把第二个落进中间
+   那一列——那一列是徽标的位置，也是留给方向键避空的。 */
+#btnSettings{grid-column:3}
+
+/* 中区两列：左列 返回/应用/静音，右列 菜单/音量+/音量-，
+   中间一列自上而下：SONY 字标 → 主页 → 语音助手 */
+.midgrid{
+  /* 页面两侧留了 20px 后可用宽度变窄，中间列放宽到 1.4fr：
+     两侧按钮因此更窄（~92px），和更高的行高搭配更接近实体遥控器的比例 */
+  display:grid;gap:12px 16px;grid-template-columns:1fr 1.4fr 1fr;
+  grid-template-areas:
+    "back brand menu"
+    "apps home  vol"
+    "mute voice vol";
+  width:100%;
+  /* 三行按钮等分中区可用高度（1fr），行高上限 104px 防止高屏上变瘦长条。
+     注意上限必须用 max-height 表达：grid-auto-rows 的 max 值不会随容器变矮而收缩，
+     容器只剩 324px 时三行仍旧各吃 104px，于是整整溢出 12px——这次"一屏放不下"的根因。
+     多出来的高度由 .inputzone 的 margin-top:auto 挪到输入区上方，底部恒留 30px */
+  --rowmax:104px;
+  flex:1 1 auto;min-height:0;
+  /* 兜底：三行按钮的物理下限（3×50 + 2×12 间隙）。有了它，即便外层
+     真的被挤到更矮，也是整个容器长出边界、把高度让给页面滚动，
+     而不是让按钮行溢出格子压到输入区上 */
+  min-height:174px;
+  max-height:calc(var(--rowmax) * 3 + 24px);
+  grid-auto-rows:minmax(50px,1fr);
+  align-content:start;
+}
+.sq{
+  border:0;background:var(--btn-bg);box-shadow:var(--btn-shadow);border-radius:13px;
+  height:100%;min-height:50px;display:grid;place-items:center;
+  font-size:12.5px;color:#cfd6e2;line-height:1.1;
+  transition:transform .07s,background .15s,box-shadow .12s;
+}
+.sq svg{width:19px;height:19px;opacity:.92}
+.sq:active{transform:scale(.955);background:var(--btn-bg-act);box-shadow:var(--btn-shadow-act)}
+.sq.act{transform:scale(.955);background:var(--btn-bg-act);box-shadow:var(--btn-shadow-act)}
+.sq.back{grid-area:back}
+.sq.menu{grid-area:menu}
+.sq.apps{grid-area:apps;display:flex;align-items:center;justify-content:center;gap:6px;font-family:inherit;letter-spacing:.5px}
+.sq.apps svg{width:16px;height:16px}
+.sq.mute{grid-area:mute;display:flex;align-items:center;justify-content:center;gap:6px;font-family:inherit;letter-spacing:.5px}
+.sq.mute svg{width:16px;height:16px}
+.sq.home{grid-area:home;display:flex;align-items:center;justify-content:center;gap:6px;font-family:inherit;letter-spacing:.5px}
+.sq.home svg{width:16px;height:16px}
+/* SONY 字标：白亮 + 加粗 + 收字距，像印在遥控器上的商标；跨两行居中，更醒目 */
+.brand{
+  grid-area:brand;display:grid;place-items:center;line-height:1;
+  font-family:"Times New Roman",Georgia,serif;font-size:19px;font-weight:700;
+  letter-spacing:2px;color:#e6ecf6;text-indent:2px;
+  text-shadow:0 1px 0 rgba(255,255,255,.14),0 -1px 0 rgba(0,0,0,.5);
+}
+/* 音量：右列做成一个整体，纵向分 ＋ / − 两半，中间一条横线分隔（像实体遥控器的摇杆键） */
+.volrock{
+  grid-area:vol;display:grid;grid-template-rows:1fr 1fr;gap:0;
+  border:0;border-radius:13px;background:var(--btn-bg);box-shadow:var(--btn-shadow);
+  overflow:hidden;min-height:50px;
+}
+.volrock .vbtn{
+  height:100%;min-height:0;border:0;border-radius:0;background:transparent;
+  display:grid;place-items:center;font-size:22px;font-weight:600;color:#dbe2ee;
+  transition:background .15s;
+}
+/* 两半之间的分隔：一条凹槽（上暗下亮），和实体遥控器的音量键一致 */
+.volrock .vbtn + .vbtn{border-top:1px solid rgba(0,0,0,.6);box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+/* 音量：两半合成一个整体后，按下不再整块缩放（缩放会把分隔线一起抖） */
+.volrock .vbtn:active{background:var(--btn-bg-act);transform:none}
+.volrock .vbtn.act{
+  background:var(--btn-bg-act);transform:none;
+  box-shadow:inset 0 2px 7px rgba(0,0,0,.55);
+}
+/* 语音助手：底行正中，夹在静音与音量-之间 */
+.vhold.mic{
+  grid-area:voice;height:100%;min-height:50px;border-radius:13px;
+  flex-direction:row;gap:7px;font-size:12.5px;letter-spacing:1px;
+}
+.vhold.mic svg{width:16px;height:16px}
+
+/* 输入区 */
+.inputrow{position:relative;display:grid;grid-template-columns:1fr 62px;gap:8px;align-items:stretch}
+/* 底部多留 22px，给水印文字腾位置，不挡打字 */
+.inputrow .ta{height:100%;min-height:66px;padding-bottom:24px}
+.sendbtn{
+  border:0;border-radius:15px;
+  background:var(--btn-bg);box-shadow:var(--btn-shadow);color:var(--accent2);
+  font-family:inherit;font-size:13.5px;font-weight:600;letter-spacing:3px;
+  display:grid;place-items:center;
+  writing-mode:vertical-rl;text-orientation:upright;text-align:center;
+  transition:transform .08s,background .15s,box-shadow .15s;
+}
+.sendbtn:active,.sendbtn.act{transform:scale(.955);background:var(--btn-bg-act);box-shadow:var(--btn-shadow-act)}
+.imeline{
+  position:absolute;left:13px;bottom:7px;z-index:2;pointer-events:none;
+  display:flex;align-items:center;gap:6px;max-width:calc(100% - 90px);
+  font-size:10px;color:var(--dim2);white-space:nowrap;overflow:hidden;opacity:.8;
+}
+.imeline .v{color:#7d8ba4;overflow:hidden;text-overflow:ellipsis}
+.imeline .tag{padding:0 5px;font-size:9.5px;line-height:1.55;background:rgba(25,29,37,.72)}
+.imerow2{display:grid;grid-template-columns:1.25fr .78fr 1.35fr;gap:7px}
+.imerow2 .btn{height:34px;font-size:11.5px;padding:0 4px}
+
+/* 高屏（如 14 Pro Max / 932px 以上）：行高和输入框一起再长一点，
+   把中区的空档吃掉，底部仍然留 30px */
+@media (min-height:900px){
+  .midgrid{--rowmax:120px}
+  .inputrow .ta{min-height:96px}
+}
+
+/* ADB 被关掉、只剩索尼 IP 控制时：文字输入、发送、输入法三颗按钮全都要 adb 才能干活，
+   整块直接隐藏（原来是置灰，用户要求改成"不显示"，别摆一堆点不动的按钮）。
+   腾出来的高度一部分给中区按钮行（行高上限略放宽，见下），
+   剩下的全部落到页面底部当留白。「应用」和「设置」保留可用：
+   走索尼 appControl / IRCC Options。 */
+body.ircc-only .inputzone{display:none}
+/* 输入区隐藏后多出来的高度，不再让中区三行按钮吞掉——
+   以前这里写 max-height:none，三行各自长到 150px+，
+   和上方方向键的比例严重失衡（IP 模式整页看着不协调的根源）。
+   现在只比 ADB 模式（104px）放宽一档，剩余高度落到页面底部，
+   视觉重心上移、底部留白更从容。max-height 用的就是 var(--rowmax)，
+   所以只改这一个变量，上限会跟着重新计算。 */
+body.ircc-only .midgrid{--rowmax:116px}
+/* IP 模式底部空白适当加大：输入区没了，页面底下多一点呼吸感更协调 */
+body.ircc-only{--padB:max(52px,env(safe-area-inset-bottom,0px))}
+/* 高屏同理，在 ADB 模式（120px）基础上放宽一档 */
+@media (min-height:900px){
+  body.ircc-only .midgrid{--rowmax:132px}
+}
+
+/* ---------- 应用选择浮层 ---------- */
+.amask{
+  position:fixed;inset:0;z-index:135;display:none;align-items:flex-end;justify-content:center;
+  background:rgba(6,8,12,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  padding:16px 12px 22px;
+}
+.amask.show{display:flex}
+.apanel{
+  width:100%;max-width:420px;background:#12161e;border:1px solid var(--line);
+  border-radius:18px;padding:12px 12px 10px;max-height:72vh;display:flex;flex-direction:column;
+}
+.ahead{display:flex;align-items:center;gap:8px;padding:0 2px 9px;border-bottom:1px solid var(--line)}
+.ahead .t{flex:1;font-size:13px;font-weight:600;color:#dbe2ee;letter-spacing:.4px}
+.ahead .n{font-size:10.5px;color:var(--dim2)}
+.ahead button{
+  border:1px solid var(--line);background:var(--card2);color:#cfd6e2;border-radius:9px;
+  height:28px;padding:0 10px;font-size:11.5px;font-family:inherit;
+}
+/* 搜索框：本机应用按名称/包名即时过滤 */
+.asearch{
+  display:flex;align-items:center;gap:8px;margin-top:9px;
+  height:38px;padding:0 10px;border-radius:11px;
+  background:#0e1117;border:1px solid var(--line);
+}
+.asearch:focus-within{border-color:#35507f}
+.asearch svg{width:15px;height:15px;flex:0 0 15px;color:var(--dim2)}
+.asearch input{
+  flex:1;min-width:0;background:none;border:0;outline:none;
+  color:var(--txt);font-size:13px;font-family:inherit;
+}
+.asearch input::placeholder{color:var(--dim2)}
+.asearch input::-webkit-search-cancel-button{display:none}
+.asearch .clr{
+  display:none;flex:0 0 auto;border:0;background:#222732;color:var(--dim);
+  width:20px;height:20px;border-radius:50%;font-size:12px;line-height:1;
+  align-items:center;justify-content:center;font-family:inherit;padding:0;
+}
+.asearch.has .clr{display:flex}
+.alist{
+  display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px;
+  overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px;
+}
+.alist button{
+  border:1px solid var(--line);background:var(--card2);color:#cfd6e2;border-radius:11px;
+  height:42px;padding:0 9px;font-size:12.5px;font-family:inherit;
+  display:flex;align-items:center;gap:8px;text-align:left;overflow:hidden;
+  transition:transform .08s,background .15s,border-color .15s;
+}
+.alist button:active,.alist button.act{
+  transform:scale(.96);background:linear-gradient(180deg,#3a4a6e,#26314a);border-color:#4a5f8c;
+}
+.alist .ic{
+  position:relative;width:22px;height:22px;flex:0 0 22px;border-radius:6px;
+  display:grid;place-items:center;overflow:hidden;
+  background:#1d2431;border:1px solid #2a3241;color:#9db6ff;font-size:11px;font-weight:700;
+}
+/* 真实图标懒加载，盖在首字母上方；加载失败自动移除，露出首字母 */
+.alist .ic img{
+  position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  border-radius:5px;background:#0d1117;
+}
+.alist .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.astat{padding:14px 4px;text-align:center;font-size:12px;color:var(--dim);line-height:1.6}
+
+/* 全平台统一：始终单列竖排（手机 / 平板 / 电脑网页一致），
+   电脑端只把纵向留白放宽一点，列宽、控件尺寸与手机完全相同 */
+@media (min-width:820px){
+  /* 改动内边距时必须同步这两个变量：.wrap 的一屏高度按它们算，
+     直接写死 padding 会让 wrap 比实际可用高度多出几像素 */
+  /* 电脑端没有状态栏净空需求，但顶部留白仍与手机保持同一档（16px），
+     否则同一份界面在宽屏上顶栏会莫名下坠一截 */
+  body{--padT:16px;--padB:28px;padding:var(--padT) 26px var(--padB)}
+}
+
+/* ---------- 画面预览（480p） ----------
+   电视端 screenrecord 出 H.264 裸流，浏览器 WebCodecs 解到 canvas。
+   播视频的时候电视只给黑屏（视频层走硬件侧通道，采不到），
+   这时盖一层「当前播放的标题」，避免用户以为是坏了。 */
+.tlbtn{
+  width:38px;height:38px;flex:0 0 38px;border-radius:50%;
+  border:1px solid rgba(255,255,255,.09);
+  background:var(--btn-bg);box-shadow:var(--btn-shadow);color:var(--dim);
+  display:grid;place-items:center;
+  transition:transform .12s,color .2s,box-shadow .2s,opacity .2s;
+}
+.tlbtn:active{transform:scale(.93)}
+.tlbtn svg{width:17px;height:17px}
+.tlbtn.on{
+  color:#cfe0ff;
+  box-shadow:var(--btn-shadow),0 0 0 1px rgba(91,140,255,.35),0 0 13px rgba(91,140,255,.16);
+}
+.tlbtn[disabled]{opacity:.34}
+
+.pvcard{display:none;flex:0 0 auto}
+.pvcard.show{display:block}
+.pvbox{
+  position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;
+  background:#05070a;border:1px solid var(--line);border-radius:14px;
+}
+.pvbox canvas{display:block;width:100%;height:100%;background:#000}
+/* 顶部小标：分辨率 + 实测帧率 */
+.pvstate{
+  /* 已经从预览框里搬出来，落在「信号 / 设置」正中间（用户要求不遮画面）。
+     视觉沿用原来那块半透明小药丸，只改成行内居中、贴着这一排的高度。
+     max-width 按中间列宽度收，超长就省略号——中间列约 1.4fr，别把设置挤出界。 */
+  place-self:center;justify-self:center;max-width:100%;
+  height:26px;display:flex;align-items:center;
+  font-size:10px;letter-spacing:.3px;color:#d5dceb;font-variant-numeric:tabular-nums;
+  background:rgba(0,0,0,.42);border:1px solid rgba(255,255,255,.13);
+  border-radius:999px;padding:0 10px;backdrop-filter:blur(6px);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.pvstate.hide{display:none}
+/* 黑屏时的标题层 */
+.pvover{
+  position:absolute;inset:0;z-index:1;display:none;
+  flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  padding:16px 18px;text-align:center;
+  background:
+    radial-gradient(120% 100% at 50% 0%,rgba(30,40,58,.9),rgba(8,10,15,.97) 70%),
+    #080a0f;
+}
+.pvover.show{display:flex}
+.pvover .k{
+  display:flex;align-items:center;gap:6px;
+  font-size:10px;letter-spacing:1.6px;color:var(--dim2);
+}
+.pvover .k i{
+  width:6px;height:6px;border-radius:50%;background:var(--rec);display:block;
+  animation:pvblink 1.8s ease-in-out infinite;
+}
+@keyframes pvblink{0%,100%{opacity:1}50%{opacity:.22}}
+/* 谁在放：应用图标 + 名字的小胶囊（用户最先想知道的就是这个） */
+.pvover .app{
+  display:inline-flex;align-items:center;gap:6px;max-width:100%;
+  padding:3px 10px 3px 4px;border-radius:999px;
+  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.11);
+  font-size:11.5px;font-weight:500;color:#c8d2e6;line-height:1.2;
+}
+.pvover .app.hide{display:none}
+.pvover .app img{
+  width:18px;height:18px;border-radius:6px;display:block;flex:0 0 18px;
+  object-fit:contain;background:rgba(255,255,255,.08);
+}
+.pvover .app img.hide{display:none}
+/* 没有图标时左右内边距对称，别让文字贴着左边 */
+.pvover .app.noicon{padding:3px 10px}
+.pvover .app .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pvover .t{
+  font-size:15px;font-weight:600;line-height:1.35;color:var(--txt);max-width:100%;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  word-break:break-word;
+}
+.pvover .t.hide{display:none}
+.pvover .s{font-size:11px;color:var(--dim);line-height:1.4}
+/* 无法预览时的出路：直接把 https 地址做成可点的，别让人照着文字手敲 */
+.pvover .link{
+  font-size:11px;color:#7fb3ff;line-height:1.4;word-break:break-all;max-width:100%;
+  padding:5px 8px;border-radius:8px;background:rgba(90,150,255,.12);
+  border:1px solid rgba(120,170,255,.28);text-decoration:none;
+}
+.pvover .link.hide{display:none}
+
+/* ── iOS 26/27 standalone PWA 顶部系统级 progressive blur（毛玻璃）修复 ────
+   参考 dshweb 项目第 9 轮定案。真机探针证明这条毛玻璃不是网页元素：
+   页面内 0 backdrop-filter / 0 半透明覆盖 / env(safe-area-inset-top) 恒 0px，
+   改 padding、theme-color、status-bar-style、清滤镜、锁不透明底色全都无效。
+   WebKit 会检查「视口顶部是否存在一定高度的 position:fixed 元素」，判定为
+   「内容潜入状态栏背后」就强制叠加 top-edge progressive blur；判定基于 CSS
+   样式声明、不基于实际渲染像素。
+   解法：放一个 height:11px（WebKit 阈值 >10px）的 position:fixed 哑元素，
+   用 background-clip:text 把背景裁到「空文本」上 —— 浏览器 0 像素绘制
+   （视觉全透明、pointer-events:none 不挡点击），但 CSS 上仍是「有背景色 +
+   有尺寸 + fixed」的合法元素，骗过 WebKit 判定，blur 随之消失。
+   · 绝不能用 opacity:0 / visibility:hidden / display:none，会被判定排除、
+     blur 复活；只有 background-clip:text 有效（Qiita 实测结论）。
+   · 不套 @media (display-mode: standalone)：元素本就不可见，恒存在可保证
+     「刚进入时」首帧判定一定命中，避免冷启动时媒体查询尚未匹配的竞态。
+   · 哑元素直接写进 <body> 开头（HTML 源码级，不是 JS 后插），保证 WebKit
+     首次布局/绘制前就存在。桌面浏览器同样零影响。 */
+.tvosd-ios-blur-fix{
+  position:fixed !important;
+  top:0 !important;
+  left:0 !important;
+  right:0 !important;
+  width:100% !important;
+  height:11px !important;
+  z-index:2147483647 !important;
+  pointer-events:none !important;
+  background-color:var(--bgTop,#121722) !important;
+  -webkit-background-clip:text !important;
+  background-clip:text !important;
+}
+</style>
+</head>
+<body>
+<div class="tvosd-ios-blur-fix" aria-hidden="true"></div>
+<div class="wrap">
+
+  <div class="authbar" id="authbar">
+    <input id="authInput" type="password" placeholder="访问令牌" autocomplete="off">
+    <button class="btn" id="authSave">确定</button>
+  </div>
+
+  <!-- 顶栏：预览（圆，左） │ 电视名 + 状态（中） │ 电源（圆，右） -->
+  <div class="topbar">
+    <button class="tlbtn" id="btnPrev" aria-label="画面预览" title="画面预览">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1.8 12S5.6 5.6 12 5.6 22.2 12 22.2 12 18.4 18.4 12 18.4 1.8 12 1.8 12z"/>
+        <circle cx="12" cy="12" r="2.9"/>
+      </svg>
+    </button>
+
+    <div class="title">
+      <span class="tname" id="tvName">电视</span>
+      <span class="dot" id="dot"></span>
+      <span class="st" id="stTxt">连接中…</span>
+    </div>
+
+    <button class="power" id="btnPower" aria-label="电源">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+        <path d="M12 3v9"/><path d="M6.4 6.4a8 8 0 1 0 11.2 0"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- 画面预览（480p，可开关）：播视频时电视只能给黑屏，改显示当前播放的标题 -->
+  <div class="pvcard" id="pvCard">
+    <div class="pvbox">
+      <canvas id="pvCanvas" width="854" height="480"></canvas>
+      <div class="pvover" id="pvOver">
+        <div class="k"><i></i><span id="pvKind">正在播放</span></div>
+        <div class="app hide" id="pvApp">
+          <img id="pvAppIcon" alt="" referrerpolicy="no-referrer">
+          <span class="nm" id="pvAppName">—</span>
+        </div>
+        <div class="t" id="pvTitle">—</div>
+        <div class="s" id="pvSub"></div>
+        <a class="link hide" id="pvLink" href="#"></a>
+      </div>
+    </div>
+  </div>
+
+  <!-- 信号 / 预览徽标 / 设置：徽标放在正中间，不遮挡预览画面 -->
+  <div class="sigrow">
+    <button class="pill" data-key="178">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M8 12h7"/><path d="M12.4 8.6L15.8 12l-3.4 3.4"/>
+      </svg>信号</button>
+    <div class="pvstate hide" id="pvState">480p</div>
+    <button class="pill" id="btnSettings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 7.5h16M4 16.5h16"/><circle cx="9.5" cy="7.5" r="2.4"/><circle cx="14.5" cy="16.5" r="2.4"/>
+      </svg>设置</button>
+  </div>
+
+  <!-- 圆盘方向键 -->
+  <div class="card dpadcard">
+    <div class="dpad">
+      <div class="ddiag"></div>
+      <div class="dk up" data-key="19" data-rep="1"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l10.5 13.5H1.5z"/></svg></div>
+      <div class="dk left" data-key="21" data-rep="1"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 12L16.5 1.5v21z"/></svg></div>
+      <div class="dk right" data-key="22" data-rep="1"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 12L7.5 1.5v21z"/></svg></div>
+      <div class="dk down" data-key="20" data-rep="1"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21L1.5 7.5h21z"/></svg></div>
+      <!-- 中间确认键：66 = KEYCODE_ENTER。实测这台索尼/当贝桌面只认 66，
+           发 23(DPAD_CENTER) 完全没反应（原装遥控器的 OK 也是确认/播放暂停） -->
+      <div class="dk ok" data-key="66" aria-label="确定" title="确定">
+        <svg viewBox="0 0 100 100" fill="currentColor" stroke="currentColor" stroke-linecap="round">
+          <circle cx="50" cy="50" r="7.5" stroke="none"/>
+          <g stroke-width="4.5" fill="none">
+            <line x1="50" y1="19" x2="50" y2="36"/>
+            <line x1="50" y1="64" x2="50" y2="81"/>
+            <line x1="19" y1="50" x2="36" y2="50"/>
+            <line x1="64" y1="50" x2="81" y2="50"/>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- 中区两列：返回/应用/静音 ｜ SONY+语音助手 ｜ 菜单/音量+/音量- -->
+  <div class="midgrid">
+    <button class="sq back" data-key="4">返回</button>
+    <div class="brand">SONY</div>
+    <button class="sq menu" data-key="82">菜单</button>
+
+    <button class="sq apps" id="btnApps" aria-label="打开应用">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round">
+        <rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/>
+        <rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>
+      </svg><span>应用</span>
+    </button>
+
+    <button class="sq home" data-key="3" aria-label="主页">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.5 10.6L12 3.6l8.5 7v9.1a1.3 1.3 0 0 1-1.3 1.3H4.8a1.3 1.3 0 0 1-1.3-1.3z"/><path d="M9.6 21v-6.2h4.8V21"/>
+      </svg><span>主页</span>
+    </button>
+
+    <button class="sq mute" data-key="164" aria-label="静音">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 9.4h3.3L12 5.4v13.2L7.3 14.6H4z"/><path d="M16.2 9.6l4.8 4.8M21 9.6l-4.8 4.8"/>
+      </svg><span>静音</span>
+    </button>
+
+    <div class="volrock">
+      <button class="vbtn" data-key="24" data-rep="1" aria-label="音量加">＋</button>
+      <button class="vbtn" data-key="25" data-rep="1" aria-label="音量减">−</button>
+    </div>
+
+    <button class="vhold mic" id="btnVoice" title="唤起电视语音助手（对着电视说话）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/>
+      </svg><span>语音助手</span>
+    </button>
+  </div>
+
+  <!-- 文本输入：“中文输入 / 检测中”作为水印贴在输入框内左下角 -->
+  <div class="inputzone">
+    <div class="inputrow">
+      <textarea class="ta" id="txt" placeholder="输入文字发到电视…" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+      <div class="imeline">
+        <span>中文输入</span>
+        <span class="tag" id="imeTag">检测中</span>
+        <span class="v" id="imeHint"></span>
+      </div>
+      <button class="sendbtn" id="btnSend">发送</button>
+    </div>
+
+    <!-- 输入法 -->
+    <div class="imerow2">
+      <button class="btn ghost" id="btnImeInstall">安装中文输入</button>
+      <button class="btn ghost" id="btnImeOn">启用</button>
+      <button class="btn ghost" id="btnImeOff">恢复系统输入法</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- 应用选择浮层 -->
+<div class="amask" id="aMask">
+  <div class="apanel">
+    <div class="ahead">
+      <span class="t">打开应用</span>
+      <span class="n" id="aCount"></span>
+      <button id="btnAppsRefresh">刷新</button>
+      <button id="btnAppsClose">关闭</button>
+    </div>
+    <div class="asearch" id="aSearchWrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.4 15.4L21 21"/>
+      </svg>
+      <input id="appSearch" type="search" placeholder="搜索本机应用（名称或包名）" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
+      <button class="clr" id="appSearchClear" aria-label="清空搜索">×</button>
+    </div>
+    <div class="alist" id="appList"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  const $ = (s) => document.querySelector(s);
+  /* OK 键用 66(ENTER)：实测这台电视（索尼 BRAVIA + 当贝桌面）发 23(DPAD_CENTER)
+     完全没反应，66 才能确认/打开；原装遥控器的 OK 也是「确认 + 播放暂停」 */
+  const CAM = { up: 19, down: 20, left: 21, right: 22, ok: 66, back: 4, home: 3, menu: 82, enter: 66, del: 67 };
+
+  /* ---------- 锁死页面缩放 ----------
+     只靠 meta viewport 不够：iOS Safari 从 10 开始无视 user-scalable=no，
+     双击 / 双指仍会放大。这里连 iOS 的 gesture 事件一起挡掉。
+     注意双击判定要带坐标，否则连点两个相邻按钮时第二下会被吞掉 */
+  let _lt = 0, _lx = 0, _ly = 0;
+  document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
+  document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
+  document.addEventListener('touchmove', (e) => {
+    if (e.touches && e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
+  document.addEventListener('touchend', (e) => {
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!t) return;
+    const now = Date.now();
+    if (now - _lt < 320 && Math.abs(t.clientX - _lx) < 28 && Math.abs(t.clientY - _ly) < 28) {
+      e.preventDefault();
+    }
+    _lt = now; _lx = t.clientX; _ly = t.clientY;
+  }, { passive: false });
+
+  /* ---------- 令牌 ---------- */
+  const _urlToken = new URLSearchParams(location.search).get('t');
+  /* 从 URL 带进来的 token 顺手存一份：PWA 从桌面图标启动时地址是 manifest 里的
+     start_url("/")，不带 ?t=，没有这份 localStorage 就会被 401 挡在鉴权条上。 */
+  if (_urlToken) { try { localStorage.setItem('tvToken', _urlToken); } catch (e) {} }
+  let token = _urlToken || localStorage.getItem('tvToken') || '';
+  if (!token) { /* 页面公开，接口再校验 */ }
+
+  function url(u) {
+    if (!token) return u;
+    return u + (u.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(token);
+  }
+
+  function showAuth() { $('#authbar').classList.add('show'); }
+  $('#authSave').addEventListener('click', () => {
+    token = $('#authInput').value.trim();
+    localStorage.setItem('tvToken', token);
+    location.reload();
+  });
+
+  /* ---------- 基础 ---------- */
+  let busy = false;
+  function buzz(ms) { try { navigator.vibrate && navigator.vibrate(ms || 8); } catch (e) {} }
+  function toast(msg, ms) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(t._h);
+    t._h = setTimeout(() => t.classList.remove('show'), ms || 1900);
+  }
+  async function post(p, body) {
+    const r = await fetch(url(p), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-token': token },
+      body: JSON.stringify(body || {}),
+    });
+    if (r.status === 401) { showAuth(); throw new Error('auth'); }
+    return r.json();
+  }
+
+  async function key(code) {
+    buzz();
+    try {
+      const r = await post('/api/key', { code });
+      if (!r.ok) toast(r.msg || '发送失败');
+    } catch (e) {
+      if (e.message !== 'auth') toast('连不上服务，检查网络');
+    }
+  }
+
+  /* 单击 + 长按连发 */
+  function bind(el) {
+    const code = el.dataset.key;
+    const canRep = el.dataset.rep === '1';
+    let t1 = null, t2 = null, down = false, inflight = false;
+    /* 上一发没回来就不叠加。走 ADB 时一发要几百毫秒，长按 150ms 一条会堆成
+       几十个请求，等松手才一起涌到电视上——那种"慢半拍、像是错位"就是这么来的。
+       正常 IP 控制一发 15ms，这个闸门根本不会拦到东西。 */
+    const fire = () => {
+      if (inflight) return;
+      inflight = true;
+      key(code).finally(() => { inflight = false; });
+    };
+    const start = (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.preventDefault();
+      if (down) return;
+      down = true;
+      el.classList.add('act');
+      fire();
+      if (canRep) t1 = setTimeout(() => { t2 = setInterval(fire, 150); }, 420);
+    };
+    const stop = () => {
+      down = false;
+      el.classList.remove('act');
+      clearTimeout(t1); clearInterval(t2);
+    };
+    el.addEventListener('pointerdown', start);
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => el.addEventListener(ev, stop));
+  }
+  document.querySelectorAll('[data-key]').forEach(bind);
+  /* 电源键：无 data-key（要走 16ms 长震动），手动管理 .act 按压反馈 */
+  const pwr = $('#btnPower');
+  pwr.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    pwr.classList.add('act');
+    buzz(16); key('26');
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => pwr.addEventListener(ev, () => pwr.classList.remove('act')));
+
+  /* 设置键：不走按键码。这台电视上 KEYCODE_SETTINGS(176) 发出去毫无反应，
+     改成让服务端 am start -a android.settings.SETTINGS（com.android.tv.settings）；
+     adb 断了服务端会自动改走索尼 appControl 启动设置应用，所以 IP 控制模式下
+     这个按钮依然可用（应用列表 / 文字输入不行，那两样只能 adb） */
+  const setBtn = $('#btnSettings');
+  setBtn.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    setBtn.classList.add('act');
+    buzz();
+    post('/api/settings', {}).then((r) => {
+      if (!r.ok) { toast(r.msg || '打不开设置', 2400); return; }
+      /* 服务端只弹菜单、不代按 OK（焦点不在第一项时会误触其他选项），
+         所以这里要明确引导用户：选项条第一项才是「设置」，自己按 OK 进去。 */
+      toast('已弹出选项 · 选中第一项「设置」再按 OK', 2600);
+    }).catch((err) => { if (err.message !== 'auth') toast('连不上服务，检查网络'); });
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => setBtn.addEventListener(ev, () => setBtn.classList.remove('act')));
+
+  /* ---------- 应用列表（读电视上装的应用，可搜索，点一下直接打开） ---------- */
+  const aMask = $('#aMask'), aList = $('#appList');
+  const aSearch = $('#appSearch'), aSearchWrap = $('#aSearchWrap');
+  let APP_ALL = [];          // 服务端返回的完整列表（搜索只在前端过滤，不重新请求）
+  let APP_SRC = '';          // 这份列表哪来的：adb / ip（索尼 appControl）/ cache（本地缓存）
+  function closeApps() { aMask.classList.remove('show'); }
+
+  function renderApps() {
+    const q = aSearch.value.trim().toLowerCase();
+    const list = q
+      ? APP_ALL.filter((a) => (a.label || '').toLowerCase().includes(q)
+        || (a.pkg || '').toLowerCase().includes(q))
+      : APP_ALL;
+    aSearchWrap.classList.toggle('has', !!q);
+    // 计数：有搜索词时显示「命中/总数」；IP 通道下若用的是本地缓存名单，标出来免得误判
+    $('#aCount').textContent = !APP_ALL.length ? ''
+      : (q ? `${list.length}/${APP_ALL.length} 个` : APP_ALL.length + ' 个')
+        + (APP_SRC === 'cache' ? ' · 上次' : APP_SRC === 'ip' ? ' · IP' : '');
+    if (!list.length) {
+      aList.innerHTML = '<div class="astat">没找到匹配的应用<br>试试应用名或包名的其他关键字</div>';
+      return;
+    }
+    aList.innerHTML = '';
+    // IP 控制下这份名单是电视自己报的（只有它能直接打开的那批应用），说一句免得用户
+    // 以为是"应用变少了"。缓存名单同理：那是上次 ADB 抓的，IP 通道可能打不开。
+    if (APP_SRC === 'ip') {
+      const n = document.createElement('div');
+      n.className = 'astat';
+      n.textContent = 'IP 控制模式：只列出电视能直接打开的应用';
+      aList.appendChild(n);
+    } else if (APP_SRC === 'cache') {
+      const n = document.createElement('div');
+      n.className = 'astat';
+      n.textContent = '离线名单（上次 ADB 抓取），部分应用 IP 通道打不开';
+      aList.appendChild(n);
+    }
+    list.forEach((a) => {
+      const b = document.createElement('button');
+      // data-k 是"一定能定位到这条应用"的键：有包名用包名，没有就用电视给的 uri
+      // （IP 控制下索尼那份列表只有 uri，还原不出包名）
+      b.dataset.k = a.pkg || a.uri || '';
+      b.dataset.pkg = a.pkg || '';
+      b.dataset.act = a.act || '';
+      b.dataset.uri = a.uri || '';
+      b.dataset.label = a.label || '';
+      const ic = document.createElement('span');
+      ic.className = 'ic';
+      const ltr = document.createElement('span');
+      ltr.textContent = String(a.label || a.pkg || '?').trim().slice(0, 1).toUpperCase();
+      ic.appendChild(ltr);
+      // 图标：/api/icon/<包名> 懒加载，盖在首字母上；取不到就留首字母
+      const img = document.createElement('img');
+      img.alt = '';
+      img.decoding = 'async';
+      img.src = url(a.icon || ('/api/icon/' + encodeURIComponent(a.pkg)));
+      img.addEventListener('error', () => { img.remove(); });
+      ic.appendChild(img);
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = a.label || a.pkg;
+      b.appendChild(ic); b.appendChild(nm);
+      aList.appendChild(b);
+    });
+  }
+
+  async function loadApps(force) {
+    aList.innerHTML = '<div class="astat">正在读取电视上的应用…</div>';
+    $('#aCount').textContent = '';
+    try {
+      const r = await fetch(url('/api/apps' + (force ? '?refresh=1' : '')), { headers: { 'x-token': token } });
+      if (r.status === 401) { showAuth(); closeApps(); return; }
+      const d = await r.json();
+      APP_ALL = (d && d.apps) || [];
+      APP_SRC = (d && d.src) || '';
+      if (!APP_ALL.length) {
+        // IP 通道连列表都问不出来时，退一步：让电视自己把应用面板弹出来
+        if (document.body.classList.contains('ircc-only')) {
+          try {
+            const r2 = await post('/api/appdrawer');
+            aList.innerHTML = '<div class="astat">'
+              + (r2.ok ? '已在电视上打开应用面板<br>用方向键挑一个吧' : '拿不到应用列表：' + (r2.msg || '未知原因'))
+              + '</div>';
+          } catch (e) {
+            aList.innerHTML = '<div class="astat">连不上服务，检查网络</div>';
+          }
+          return;
+        }
+        aList.innerHTML = '<div class="astat">没读到应用列表<br>确认电视已开机、网络可达</div>';
+        return;
+      }
+      renderApps();
+    } catch (e) {
+      aList.innerHTML = '<div class="astat">连不上服务，检查网络</div>';
+    }
+  }
+  aSearch.addEventListener('input', renderApps);
+  aSearch.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    aSearch.blur();
+    const first = aList.querySelector('button[data-k]');   // 回车直接打开第一条
+    if (first) first.click();
+  });
+  $('#appSearchClear').addEventListener('click', () => {
+    aSearch.value = '';
+    renderApps();
+    aSearch.focus();
+  });
+  $('#btnApps').addEventListener('click', () => {
+    buzz(); aMask.classList.add('show'); aList.scrollTop = 0; aSearch.value = ''; loadApps(false);
+  });
+  $('#btnAppsClose').addEventListener('click', () => { buzz(); closeApps(); });
+  $('#btnAppsRefresh').addEventListener('click', () => { buzz(); loadApps(true); });
+  aMask.addEventListener('click', (e) => { if (e.target === aMask) closeApps(); });
+  aList.addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-k]');
+    if (!b) return;
+    buzz();
+    b.classList.add('act');
+    try {
+      const r = await post('/api/app', {
+        pkg: b.dataset.pkg || '', act: b.dataset.act || '',
+        uri: b.dataset.uri || '', label: b.dataset.label || '',
+      });
+      toast((r && r.msg) || (r && r.ok ? '已打开' : '打开失败'));
+      if (r && r.ok) setTimeout(closeApps, 420);
+    } catch (err) {
+      if (err.message !== 'auth') toast('连不上服务，检查网络');
+    } finally {
+      b.classList.remove('act');
+    }
+  });
+
+  /* ---------- 输入法 ---------- */
+  function renderIme(ime) {
+    const tag = $('#imeTag');
+    const hint = $('#imeHint');
+    if (!ime) { tag.textContent = '未知'; tag.className = 'tag'; return; }
+    if (ime.active) {
+      tag.textContent = '已启用';
+      tag.className = 'tag ok';
+      hint.textContent = '可直接输入中文';
+    } else if (ime.installed) {
+      tag.textContent = '已安装·未启用';
+      tag.className = 'tag';
+      hint.textContent = '点“启用”后电视可收中文';
+    } else {
+      tag.textContent = '未安装';
+      tag.className = 'tag';
+      hint.textContent = '安装 17KB 输入法后支持中文';
+    }
+    $('#btnImeOn').disabled = !ime.installed || ime.active;
+    $('#btnImeOff').disabled = !ime.active;
+  }
+
+  async function loadStatus() {
+    try {
+      const r = await fetch(url('/api/status'), { headers: { 'x-token': token } });
+      if (r.status === 401) { showAuth(); return; }
+      const s = await r.json();
+      // 服务端 adb 失败时可能把 stderr 原文塞进字段（如 "error: device 'x:5555' not found"），
+      // 直接显示会把顶栏撑成一串英文报错，这里统一兜底
+      const bad = (v) => !v || /error|not found|offline|unauthorized|no devices/i.test(v);
+      $('#tvName').textContent = bad(s.model) ? '电视' : s.model;
+      const ctrl = s.ctrl || (s.online ? 'adb' : 'none');
+      const awakeMap = { awake: '已开机', dreaming: '屏保中', dream: '屏保中', dozing: '半休眠', asleep: '待机中' };
+      const awKey = String(s.awake || '').toLowerCase();
+      const awake = awKey === 'awake' || awKey === 'dreaming' || awKey === 'dream' || awKey === 'dozing';
+      /* 灯 = 电视亮不亮，两种控制模式口径统一：都看 awake。
+         以前 IP 模式下无脑点亮，电视明明待机了绿点还亮着，没法判断开关机；
+         现在待机就熄灯，文案里带「待机中」。adb 模式 awake 来自 adb；
+         IP 模式来自索尼 getPowerStatus（服务端已接好）。 */
+      const awakeKnown = ctrl === 'ircc' ? awKey === 'awake' : awake;
+      $('#dot').className = 'dot ' + (awakeKnown ? 'on' : 'off');
+      if (ctrl === 'ircc') {
+        // ADB 关掉了，只剩索尼 IP 控制：按键、应用列表、设置都还能用；
+        // 只有中文输入 / 输入法必须 adb
+        $('#stTxt').textContent = awakeKnown ? 'IP 控制'
+          : 'IP 控制 · ' + (awKey === 'standby' ? '待机中' : (awakeMap[awKey] || '已关机'));
+        document.body.classList.add('ircc-only');
+      } else {
+        document.body.classList.remove('ircc-only');
+        $('#stTxt').textContent = awakeMap[awKey] || '未知';
+      }
+      renderIme(s.ime);
+      /* 预览有两条路：电视端 App 直连（pvApp 在线就行，**不需要 ADB**），
+         或者 screenrecord（必须 ADB）。以前只认第二条，所以 IP 控制模式下
+         一律灰掉；现在装了 flowrec.apk 就能一直开着预览。 */
+      PV.srcApp = !!(s.pvApp && s.pvApp.size);
+      const pvOK = ctrl === 'adb' || PV.srcApp;
+      const pb = $('#btnPrev');
+      if (pb) {
+        pb.disabled = !pvOK;
+        pb.title = PV.srcApp
+          ? '画面预览（电视端 App 直连，不依赖 ADB）'
+          : (pvOK ? '画面预览' : '画面预览需要 ADB 或电视端 App');
+      }
+      if (!pvOK && PV.on) pvSet(false, true, true);
+      return s;
+    } catch (e) {
+      $('#dot').className = 'dot off';
+      $('#stTxt').textContent = '服务未响应';
+      return null;
+    }
+  }
+
+  $('#btnImeInstall').addEventListener('click', async () => {
+    buzz();
+    toast('正在安装到电视…');
+    try {
+      const r = await post('/api/ime/install');
+      toast(r.msg || (r.ok ? '已安装' : '安装失败'));
+      loadStatus();
+    } catch (e) { if (e.message !== 'auth') toast('安装失败'); }
+  });
+  $('#btnImeOn').addEventListener('click', async () => {
+    buzz();
+    try {
+      const r = await post('/api/ime/activate');
+      toast(r.msg || (r.ok ? '已启用' : '启用失败'));
+      loadStatus();
+    } catch (e) { if (e.message !== 'auth') toast('启用失败'); }
+  });
+  $('#btnImeOff').addEventListener('click', async () => {
+    buzz();
+    try {
+      const r = await post('/api/ime/restore');
+      toast(r.msg || (r.ok ? '已恢复' : '恢复失败'));
+      loadStatus();
+    } catch (e) { if (e.message !== 'auth') toast('恢复失败'); }
+  });
+
+  /* ---------- 发送文字 ---------- */
+  // 语音/文字都走这里：中文发不进去时自动切到 ADBKeyboard 再试一次
+  async function pushText(t) {
+    let r = await post('/api/text', { text: t });
+    if (r.ok) return r;
+    if (r.needIme) {
+      const a = await post('/api/ime/activate', {}).catch(() => null);
+      if (a && a.ok) {
+        await loadStatus();
+        r = await post('/api/text', { text: t });
+        if (r.ok) return Object.assign(r, { autoIme: true });
+      }
+    }
+    return r;
+  }
+
+  async function sendText() {
+    const box = $('#txt');
+    const v = box.value.trim();
+    if (!v) { toast('先输入内容'); return; }
+    buzz();
+    try {
+      const r = await pushText(v);
+      if (r.ok) { toast(r.autoIme ? '已发送（自动启用中文输入）' : '已发送'); box.value = ''; }
+      else if (r.needIme) { toast(r.msg); $('#imeTag').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+      else toast(r.msg || '发送失败');
+    } catch (e) { if (e.message !== 'auth') toast('连不上服务'); }
+  }
+  $('#btnSend').addEventListener('click', sendText);
+  /* 按下反馈：发送这类非 data-key 按钮手动补 .act */
+  function tapAct(el) {
+    if (!el) return;
+    el.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      el.classList.add('act');
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => el.addEventListener(ev, () => el.classList.remove('act')));
+  }
+  tapAct($('#btnSend'));
+  $('#txt').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendText(); }
+  });
+
+  /* ---------- 语音 ---------- */
+  /* 语音键只做一件事：唤起电视自己的语音助手（KEYCODE_ASSIST = 219）。
+     识别、理解、执行全部在电视端完成，手机不录音、不识别、不往电视发别的内容。
+     按下后电视会弹“我在听呢”，对着电视或原装遥控器说话即可 */
+  const vBtn = $('#btnVoice');
+  vBtn.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    vBtn.classList.add('act');
+    buzz(10);
+    key('219');
+    toast('已唤起电视语音助手，请对着电视说话');
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => vBtn.addEventListener(ev, () => vBtn.classList.remove('act')));
+
+  /* ---------- 桌面键盘 ---------- */
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+    const map = {
+      ArrowUp: CAM.up, ArrowDown: CAM.down, ArrowLeft: CAM.left, ArrowRight: CAM.right,
+      Enter: CAM.ok, Backspace: CAM.back, Escape: CAM.back, h: CAM.home, m: CAM.menu,
+      '+': 24, '-': 25,
+    };
+    let code = map[e.key];
+    if (e.key === ' ' || e.key === 'p') code = 85;
+    if (code === undefined) return;
+    e.preventDefault();
+    key(code);
+  });
+
+  /* ---------- 画面预览（480p） ----------
+     数据通路：GET /api/preview 是一条不结束的响应，里面是
+     「[1 字节类型][4 字节大端长度][负载]」，类型 2 = 一个 H.264 access unit（Annex-B）。
+     这里自己拆 NAL、组 avcC、交给 WebCodecs 解码画到 canvas：
+     服务端不需要 ffmpeg，电视端只跑 screenrecord。
+
+     为什么要检测黑屏：BRAVIA 的视频层走硬件侧通道合成（SurfaceFlinger 里
+     composition=SIDEBAND），screencap / screenrecord 都拿不到电影画面，只能拿到
+     黑色的 UI 层。所以「全黑」不是坏了，而是「正在放视频」——这时盖一层标题，
+     标题来自 /api/nowplaying。 */
+  const PV = {
+    on: localStorage.getItem('tvPrev') === '1',
+    ac: null, dec: null, cfgDone: false, sps: null, pps: null,
+    ts: 0, frames: 0, got: 0, fpsAt: Date.now(), fps: 0, startedAt: 0,
+    black: 0, npTimer: 0, npBusy: false, tickTimer: 0, iconPkg: '',
+    /* 绘制侧：只保留"最新一帧"，绘制交给 rAF。屏幕编码器是变帧率的——静止时
+       一帧不出，一动就成簇吐（实测 100ms 内 17 帧 = 瞬时 170fps）。要是每帧都
+       同步 drawImage，主线程被绘制塞满，解码器的输出队列就永远排不空，
+       帧龄会一路涨到几秒（实测有人看到 7000ms）。 */
+    latest: null, latestAt: -1, rafId: 0, dropped: 0, qPeak: 0,
+    lagList: [], lag50: -1, lag95: -1, lagPeak: -1,
+    /* 卡死自愈用的三个时刻：上次「收到帧」、上次「解出帧」、上次重连。
+       为什么需要它：这些区域（首页最近应用那一列、应用列表最左/最右列）一次
+       切换往往只产生 1~2 帧，而 screenrecord 的 IDR 间隔长到几十秒。万一那一两
+       帧解码失败，画面就永久停在旧状态，只能等下一个 IDR 才恢复——看起来就是
+       「按键没反应、徽标 0 fps」。这里的判断很保守：**只有「一直在收数据、
+       却一个帧都解不出来」才算卡死**，画面静止（服务端根本不发数据）不会误判。 */
+    lastInAt: 0, lastOutAt: 0, reconnectAt: 0, healed: 0, kickTries: 0,
+    /* 「空闲→恢复」要主动 kick（见 pvKick）。lastDataAt 是上次收到任意字节的时刻，
+       kickAt/kicks 记录踢过的次数和原因，方便复盘。 */
+    lastDataAt: 0, kickAt: 0, kicks: 0, kickWhy: '',
+    /* 上次真的把画面画上去的时刻。自愈判据用它而不是「解出帧」：
+       用户看到的是 canvas，解码器出没出图他看不见。 */
+    lastPaintAt: 0,
+    /* 1.5s 窗口里「收到多少帧 / 解出多少帧」。两者差得远就说明帧到了却解不出来，
+       徽标直接把这个写出来，不用连控制台。in 在 reader 循环里加，got 在 output 里加。 */
+    in: 0, ver: '',
+    /* 采集源是电视端 App（不是 screenrecord）——见 loadStatus */
+    srcApp: false,
+    /* 配置阶段的临时状态：cfgBusy = 正在异步问 isConfigSupported；pend = 问的这段时间
+       收到的那一帧（配好立刻补喂，不然首帧要等到下一次画面变化才出得来）；
+       cfgHw = 最终落到的档次（硬解/默认/软解），出问题时一眼能看出来。 */
+    cfgBusy: false, pend: null, cfgHw: '',
+    /* 已经成功画到 canvas 上的帧数。首帧迟迟画不出来就靠它判断（见 pvHardReset）。 */
+    painted: 0, hardAt: 0, heals: 0, decodeErr: 0, lastErr: '',
+    /* 首帧自救：keyData = 最近一个关键帧的 AVCC 数据（原样留一份），
+       keyT = 重喂定时器，keyRetry = 已经重喂了几次，cfg = 当前生效的解码配置。
+       为什么要留：手机的硬件解码器经常把 configure() 后的第一帧吃掉（有输入
+       没输出、不报错），而画面静止时服务端不会再发帧，下一帧要等用户按键让
+       电视画面变化才来——表现就是「打开预览一直黑，按一下键才出图」。
+       留一份关键帧，500ms 还没画出来就重置解码器再喂一次（见 pvKeyRetry）。 */
+    keyData: null, keyT: 0, keyRetry: 0, cfg: null,
+    /* 连上后 900ms 的首帧保底定时器（见 pvStart） */
+    openT: 0,
+    /* 每喂进解码器一帧就记下它的收包时刻，画出来时按先进先出取回。
+       不拿 frame.timestamp 算延迟：那个值是解码器回传的，某些实现（实测就遇到）
+       会把它改成 0 或者别的东西，一减就变成「页面已经开了几秒」——于是
+       页面开 7 秒、徽标就显示 7000ms。收包时刻是自己打的，不会被改写。 */
+    qts: [],
+    want: { w: 0, h: 0 },              // 服务端声明的有效画面尺寸（X-Preview）
+  };
+  const pvCanvas = $('#pvCanvas');
+  // 手机上没法开控制台，这个出口留着：卡的时候输入 __pv 就能看 dropped / qPeak / lagPeak
+  window.__pv = PV;
+  const pvCtx = pvCanvas.getContext('2d', { alpha: false });
+  const pvProbe = document.createElement('canvas');
+  pvProbe.width = 24; pvProbe.height = 14;
+  const pvProbeCtx = pvProbe.getContext('2d', { willReadFrequently: true });
+
+  // 拿不到图标（系统应用解析不出 APK 内图标）就只留应用名，不要显示裂图
+  $('#pvAppIcon').addEventListener('error', (e) => {
+    e.target.classList.add('hide');
+    const box = e.target.parentNode;
+    if (box) box.classList.add('noicon');
+  });
+
+  function pvLed(txt) {
+    const el = $('#pvState');
+    if (!txt) { el.classList.add('hide'); return; }
+    if (el.textContent !== txt) el.textContent = txt;
+    el.classList.remove('hide');
+  }
+
+  /* 拆 Annex-B 成 NAL 数组 */
+  function pvNals(buf) {
+    const out = [];
+    const starts = [];
+    for (let i = 0; i + 3 < buf.length; i++) {
+      if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1) { starts.push(i); i += 2; }
+    }
+    for (let k = 0; k < starts.length; k++) {
+      const s = starts[k] + 3;
+      let e = k + 1 < starts.length ? starts[k + 1] : buf.length;
+      while (e > s && buf[e - 1] === 0) e--;
+      if (e > s) out.push(buf.subarray(s, e));
+    }
+    return out;
+  }
+
+  /* AVCDecoderConfigurationRecord：Chrome / Safari 都认这个写法（别用 annexb 模式，Safari 支持差） */
+  function pvAvcC(sps, pps) {
+    const b = new Uint8Array(11 + sps.length + pps.length);
+    let p = 0;
+    b[p++] = 1; b[p++] = sps[1]; b[p++] = sps[2]; b[p++] = sps[3];
+    b[p++] = 0xff;                       // lengthSizeMinusOne = 3
+    b[p++] = 0xe1;                       // SPS 个数 = 1
+    b[p++] = (sps.length >> 8) & 0xff; b[p++] = sps.length & 0xff;
+    b.set(sps, p); p += sps.length;
+    b[p++] = 1;                          // PPS 个数 = 1
+    b[p++] = (pps.length >> 8) & 0xff; b[p++] = pps.length & 0xff;
+    b.set(pps, p);
+    return b;
+  }
+
+  function pvCodec(sps) {
+    return 'avc1.' + [sps[1], sps[2], sps[3]]
+      .map((v) => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+  }
+
+  /* 挑一份**真正被支持**的解码配置再 configure。
+     踩过的坑（Edge 156 / Chrome 155 实测）：`hardwareAcceleration: 'prefer-hardware'`
+     在很多机器上根本不支持，而 `configure()` **不会抛异常**——错误是异步从 error
+     回调报出来的（"Unsupported configuration"）。老代码用 try/catch 兜底，
+     兜底就永远不执行，`cfgDone` 却已经置 true，于是整条预览一帧都解不出来，
+     表现就是「打开预览一直没画面」。所以这里先用 isConfigSupported() 挨个问，
+     拿到受支持的那一档再配，顺序是：优先硬解 → 让浏览器自己选 → 软解兜底。 */
+  const pvCfgTries = (base) => [
+    Object.assign({ hardwareAcceleration: 'prefer-hardware' }, base),
+    base,                                              // 不指定 = 浏览器默认（Chrome 会优先硬解）
+    Object.assign({ hardwareAcceleration: 'prefer-software' }, base),
+  ];
+
+  async function pvConfig(sps, pps) {
+    if (PV.cfgBusy) return;
+    PV.cfgBusy = true;
+    const base = { codec: pvCodec(sps), description: pvAvcC(sps, pps), optimizeForLatency: true };
+    let chosen = null;
+    for (const c of pvCfgTries(base)) {
+      try {
+        const r = await VideoDecoder.isConfigSupported(c);
+        if (r && r.supported) { chosen = r.config || c; break; }
+      } catch (e) { /* 这一档问不了，试下一档 */ }
+    }
+    PV.cfgBusy = false;
+    if (!PV.dec) return;
+    if (!chosen) { pvFail('这台设备的解码器不支持这条视频流（' + base.codec + '）'); return; }
+    try { PV.dec.configure(chosen); }
+    catch (e) { pvFail('解码器配置失败：' + e.message); return; }
+    PV.cfg = chosen;                            // 首帧自救时要按同一份配置重新 configure
+    PV.cfgDone = true;
+    PV.cfgHw = chosen.hardwareAcceleration || '默认';
+    /* 配置是异步问出来的，问的这段时间里收到的那一帧（通常就是首帧 IDR）
+       要扣在 PV.pend 里，配好立刻补喂——否则得等下一次画面变化才有图。 */
+    const p = PV.pend;
+    PV.pend = null;
+    if (p) pvDecode(p.nals, p.key);
+  }
+
+  /** 把若干 VCL NAL 组装成 AVCC（4 字节长度前缀）喂进解码器 */
+  function pvDecode(vcl, key) {
+    if (!PV.dec || !PV.cfgDone) return;
+    let size = 0;
+    for (const n of vcl) size += 4 + n.length;
+    const data = new Uint8Array(size);
+    let p = 0;
+    for (const n of vcl) {
+      data[p++] = (n.length >>> 24) & 0xff;
+      data[p++] = (n.length >>> 16) & 0xff;
+      data[p++] = (n.length >>> 8) & 0xff;
+      data[p++] = n.length & 0xff;
+      data.set(n, p);
+      p += n.length;
+    }
+    const now = performance.now();
+    PV.lastInAt = now;
+    PV.ts = Math.max(PV.ts + 1000, Math.round(now * 1000));
+    if (key) { PV.keyData = data; pvKeyRetry(); }   // 留一份，首帧被解码器吃掉时重喂
+    try {
+      PV.dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: PV.ts, data }));
+      /* 只有真的喂进去了才记账，保证这个队列和输出帧一一对应 */
+      PV.qts.push(now);
+      if (PV.qts.length > 240) PV.qts.shift();
+    } catch (e) {
+      /* 解码器拒绝这一帧（队列满才会这样），参考链就断了，只能等下一个关键帧。
+         真出现了看 __pv.decodeErr 和 __pv.qPeak 就知道是不是手机解码扛不住。 */
+      PV.decodeErr = (PV.decodeErr || 0) + 1;
+    }
+  }
+
+  /* 首帧自救：关键帧喂进去 500ms 还没画到 canvas 上，就把解码器重置后把
+     同一帧再喂一次（最多 3 次）。
+     病根：手机的硬件 H.264 解码器经常把 configure() 之后的第一帧吃掉——有
+     输入、没输出，也不报错。静止画面时编码器不出新帧（这台电视不支持补帧），
+     下一帧要等用户按键让画面变化才来，于是预览就一直黑着。同一个 IDR 喂给
+     一个干净的解码器，第二次基本都能出图。 */
+  function pvKeyRetry() {
+    clearTimeout(PV.keyT);
+    if (PV.painted) return;
+    PV.keyT = setTimeout(() => {
+      if (PV.painted || !PV.on || !PV.dec || !PV.cfgDone || !PV.keyData) return;
+      if (PV.keyRetry >= 3) return;
+      PV.keyRetry++;
+      try {
+        PV.dec.reset();
+        if (PV.cfg) PV.dec.configure(PV.cfg);
+      } catch (e) {
+        /* 有的实现 reset 之后不认旧配置，那就换一个新的解码器 */
+        try { PV.dec.close(); } catch (_) {}
+        PV.dec = pvNewDecoder();
+        try { if (PV.cfg) PV.dec.configure(PV.cfg); } catch (_) { return; }
+      }
+      try {
+        PV.ts = Math.max(PV.ts + 1000, Math.round(performance.now() * 1000));
+        PV.dec.decode(new EncodedVideoChunk({ type: 'key', timestamp: PV.ts, data: PV.keyData }));
+        PV.qts.push(performance.now());
+        PV.retried = (PV.retried || 0) + 1;     // __pv.retried 能看到救了几次
+      } catch (e) { /* 这次没喂进去就算了，下一轮再试 */ }
+      pvKeyRetry();
+    }, 500);
+  }
+
+  function pvFeed(nals) {
+    let sps = null, pps = null, key = false;
+    const vcl = [];
+    for (const n of nals) {
+      const t = n[0] & 0x1f;
+      if (t === 7) sps = n;
+      else if (t === 8) pps = n;
+      else if (t >= 1 && t <= 5) { vcl.push(n); if (t === 5) key = true; }
+    }
+    if (sps) PV.sps = sps;
+    if (pps) PV.pps = pps;
+    if (!vcl.length) return;
+    if (!PV.dec) return;                       // 还没建解码器
+    if (!PV.cfgDone) {
+      /* 没配好之前只吃关键帧：第二个浏览器接进来时只能补到参数集，
+         没有关键帧；这时候喂 P 帧解码器会报错，把整条预览打死。 */
+      if (!key) return;
+      if (!PV.sps || !PV.pps) return;
+      if (!PV.pend || key) PV.pend = { nals: vcl, key: true };
+      pvConfig(PV.sps, PV.pps);
+      return;
+    }
+    pvDecode(vcl, key);
+  }
+
+  /* 真正落笔的地方，一帧最多跑一次（rAF 节奏，约 60Hz）。 */
+  function pvPaint() {
+    PV.rafId = 0;
+    const frame = PV.latest;
+    if (!frame) return;
+    PV.latest = null;
+    const fw = frame.displayWidth || 0, fh = frame.displayHeight || 0;
+    const w = PV.want.w || fw || pvCanvas.width;
+    const h = PV.want.h || fh || pvCanvas.height;
+    if (pvCanvas.width !== w || pvCanvas.height !== h) {
+      pvCanvas.width = w; pvCanvas.height = h;
+    }
+    /* 只取左上角的有效区域：编码器会把宽高补到 16 的倍数，
+       补出来的边是未初始化的 YUV 0（=绿色），直接缩放会把绿条带进画面 */
+    const sw = Math.min(fw || w, w);
+    const sh = Math.min(fh || h, h);
+    try { pvCtx.drawImage(frame, 0, 0, sw, sh, 0, 0, w, h); } catch (e) {}
+    /* 帧龄 = 这一帧从「收到」到「真的画出来」排了多久，不含网络。
+       收包时刻在 output 里就跟着帧一起取好了（见 qts 的注释）。
+       稳态几毫秒；上千就是本机解码/绘制跟不上输入了。 */
+    const lag = PV.latestAt < 0 ? -1 : performance.now() - PV.latestAt;
+    if (lag >= 0 && lag < 5000) PV.lagList.push(lag);
+    frame.close();
+    PV.frames++;
+    PV.painted++;
+    PV.lastPaintAt = performance.now();
+  }
+
+  function pvOverlay(show) {
+    $('#pvOver').classList.toggle('show', show);
+  }
+
+  function pvFail(msg) {
+    pvStop();
+    $('#pvKind').textContent = '预览中断';
+    $('#pvTitle').textContent = msg;
+    $('#pvSub').textContent = '点左上角眼睛重新打开';
+    pvLink('');
+    pvOverlay(true);
+  }
+
+  /* 遮罩层里那个「改用 HTTPS 打开」的链接，只在无法预览时存在 */
+  function pvLink(href, text) {
+    const a = $('#pvLink');
+    if (!href) {
+      a.classList.add('hide');
+      a.removeAttribute('href');
+      a.textContent = '';
+      return;
+    }
+    a.href = href;
+    a.textContent = text || href;
+    a.classList.remove('hide');
+  }
+
+  /* 预览全靠 WebCodecs，而 WebCodecs 是「安全上下文」专属接口：
+     用 http://192.168.x.x 打开时 window.VideoDecoder 直接是 undefined
+     （本机实测 Edge 156 与 Chrome 155 一模一样；而 EncodedVideoChunk 还在，
+     所以只查后者根本发现不了）。以前这里统一甩一句「浏览器不支持」，
+     把真正的原因藏起来了。现在分两种：安全的上下文里真没 WebCodecs 才怪浏览器，
+     不安全的上下文就直说，并把可点的 https 地址给出来。 */
+  async function pvNoCodec() {
+    pvStop();
+    $('#pvApp').classList.add('hide');
+    $('#pvTitle').classList.remove('hide');
+    $('#pvKind').textContent = '无法预览';
+    pvLink('');
+    if (window.isSecureContext) {
+      $('#pvTitle').textContent = '这个浏览器没有 WebCodecs';
+      $('#pvSub').textContent = '需要 Chrome / Edge 94+ 或 Safari 16.4+';
+      pvOverlay(true);
+      return;
+    }
+    $('#pvTitle').textContent = 'http 地址不是安全上下文，浏览器禁用了 WebCodecs';
+    $('#pvSub').textContent = '正在查这台机器有没有开 HTTPS…';
+    pvOverlay(true);
+    let port = 0;
+    try {
+      const r = await fetch(url('/api/health'), { cache: 'no-store' });
+      const d = await r.json();
+      port = Number(d.httpsPort) || 0;
+    } catch (e) { /* 查不到就退化成文字说明 */ }
+    if (port) {
+      const u = 'https://' + location.hostname + ':' + port + '/'
+        + (token ? '?t=' + encodeURIComponent(token) : '');
+      $('#pvSub').textContent = '改用 HTTPS 打开（证书自签，首次点「高级 → 继续前往」）';
+      pvLink(u, '打开 ' + u);
+    } else {
+      $('#pvSub').textContent = '只能靠 localhost，或给 NAS 配 HTTPS（反向代理 / HTTPS_PORT）';
+    }
+  }
+
+  /* 造一个解码器。单独拆出来是因为「采集源切换」时要换一个新的：
+     电视端 App 连上/掉线时分辨率、profile 都可能变，旧解码器还按老参数配着，
+     继续喂会直接报错（而且 configure 不抛异常，只能换新的）。 */
+  function pvNewDecoder() {
+    return new VideoDecoder({
+      /* output 只做一件事：留住最新一帧，其余立刻关掉。
+         解码速度远高于屏幕刷新率，逐帧画反而会把主线程堵死（见 PV.latest 注释）。 */
+      output(frame) {
+        PV.got++;
+        PV.lastOutAt = performance.now();
+        if (PV.kickTries) PV.kickTries = 0;   // 有帧出来了，说明自救生效
+        const q = PV.dec ? PV.dec.decodeQueueSize : 0;
+        if (q > PV.qPeak) PV.qPeak = q;
+        /* 一输出就把这一帧自己的收包时刻取走：丢中间帧时它跟着一起作废，
+           绝不会让队列错位（错位一次，后面每帧的帧龄都是假的）。 */
+        const at = PV.qts.length ? PV.qts.shift() : -1;
+        if (PV.latest) { PV.latest.close(); PV.dropped++; }
+        PV.latest = frame;
+        PV.latestAt = at;
+        if (!PV.rafId) PV.rafId = requestAnimationFrame(pvPaint);
+      },
+      error(e) {
+        PV.decodeErr = (PV.decodeErr || 0) + 1;
+        PV.lastErr = (e && e.message) || '未知';
+        /* 解码器一旦进了错误态就不会自己恢复（配置不被接受更是永远不恢复）。
+           还没画出过任何一帧 → 多半是配置/首帧的问题，整条链路重建；
+           已经能出图了 → 只是参考链断了，交给 pvReconnect 用 kick 拿新 IDR，
+           不用重建解码器（那样会闪一下）。 */
+        if (!PV.painted) pvHardReset();
+        else pvLed('解码出错，正在恢复…');
+      },
+    });
+  }
+
+  async function pvStart() {
+    if (PV.ac) return;                     // 已经在连了（切前台 + 点开关可能同时触发）
+    if (!window.VideoDecoder || !window.EncodedVideoChunk) {
+      pvNoCodec();
+      return;
+    }
+    PV.ac = new AbortController();
+    /* 连接代次：自愈重连时旧的那条流还在收尾（abort 之后 catch 才跑），
+       它结束时不能再回头把新的这条流判死。 */
+    const gen = (PV.gen = (PV.gen || 0) + 1);
+    PV.cfgDone = false; PV.sps = null; PV.pps = null;
+    PV.frames = 0; PV.got = 0; PV.fps = 0; PV.fpsAt = Date.now(); PV.ts = 0;
+    PV.lagList = []; PV.lag50 = -1; PV.lag95 = -1; PV.lagPeak = -1;
+    PV.dropped = 0; PV.qPeak = 0; PV.qts = [];
+    PV.lastInAt = 0; PV.lastOutAt = 0;
+    PV.lastDataAt = 0; PV.kickAt = 0; PV.kicks = 0; PV.kickWhy = '';
+    PV.lastPaintAt = 0; PV.in = 0;
+    PV.painted = 0; PV.pend = null; PV.cfgBusy = false; PV.cfgHw = '';
+    clearTimeout(PV.keyT); PV.keyT = 0;
+    PV.keyData = null; PV.keyRetry = 0; PV.retried = 0; PV.cfg = null;
+    PV.startedAt = Date.now();
+    pvLed('连接中…');
+    /* 首帧保底：900ms 还没往 canvas 上画过任何一帧，就直接向服务端要一次新
+       IDR（重开会话 450ms 出新关键帧），比等编码器自己吐（可能几十秒）快得多。
+       这条是「打开预览黑屏、按一下键才出图」的兜底：那条路径上客户端其实
+       一直在等一个永远不来的关键帧。 */
+    clearTimeout(PV.openT);
+    PV.openT = setTimeout(() => { if (PV.on && !PV.painted) pvKick('open', true); }, 900);
+    /* 界面版本号也拿过来，直接写在预览徽标上：以后反馈问题时一眼就能看出
+       手机上跑的是哪一版，不用再猜「你是不是没更新」。 */
+    if (!PV.ver) {
+      fetch(url('/api/health'), { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((d) => { if (d && d.ver) PV.ver = String(d.ver).replace(/^\d{4}-\d{2}-\d{2}\./, ''); })
+        .catch(() => {});
+    }
+
+    PV.dec = pvNewDecoder();
+
+    try {
+      const r = await fetch(url('/api/preview'), {
+        signal: PV.ac.signal, cache: 'no-store', headers: { 'x-token': token },
+      });
+      if (!r.ok || !r.body) {
+        let m = '电视未就绪';
+        try { const d = await r.json(); m = d.msg || m; } catch (e) {}
+        if (PV.gen === gen) pvFail(m);
+        return;
+      }
+      // 服务端告诉我们有效画面多大（编码器可能补齐了边），按这个尺寸裁
+      const hm = /^(\d+)x(\d+)$/.exec(r.headers.get('X-Preview') || '');
+      PV.want = hm ? { w: +hm[1], h: +hm[2] } : { w: 0, h: 0 };
+      const reader = r.body.getReader();
+      let buf = new Uint8Array(0);
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value || !value.length) continue;
+        /* 这里**不要**「静默后再来数据就 kick」。试过这条路：静止 1 秒后一按键
+           就重开编码会话，每次操作都要黑 450ms 等新的 IDR——比原来更卡。
+           小 P 帧解不出来是「解码器状态」问题，交给 pvReconnect / pvHardReset
+           按「有没有画到 canvas 上」判断，不在数据通路上乱踢。 */
+        PV.lastDataAt = performance.now();
+        if (buf.length) {
+          const nb = new Uint8Array(buf.length + value.length);
+          nb.set(buf, 0); nb.set(value, buf.length);
+          buf = nb;
+        } else buf = value;
+        while (buf.length >= 5) {
+          const len = ((buf[1] << 24) | (buf[2] << 16) | (buf[3] << 8) | buf[4]) >>> 0;
+          if (buf.length < 5 + len) break;
+          if (buf[0] === 2) { PV.in++; pvFeed(pvNals(buf.subarray(5, 5 + len))); }
+          /* 3 = 采集源换了（电视端 App 连上或掉线）：尺寸/profile 可能全变，
+             换一个解码器重新按新参数配置。**不断连接**，画面不会闪断。 */
+          else if (buf[0] === 3) pvSwapDecoder();
+          buf = buf.subarray(5 + len);
+        }
+      }
+      // 服务端主动结束（连续起不来）→ 别让画面停在那儿装死
+      if (PV.ac && PV.gen === gen) pvFail('预览已停止，电视可能待机或 adb 掉线');
+    } catch (e) {
+      if (PV.gen === gen && (!e || e.name !== 'AbortError')) pvFail('预览中断：' + ((e && e.message) || '连接失败'));
+    }
+  }
+
+  /* 整条链路重建：关掉解码器 → 重新连 → 再让服务端重开一次编码会话。
+     为什么要 kick：screenrecord 是多个浏览器共用的一路流，光重连只是又挂上同一条
+     流——中间没有 SPS/PPS，也没有关键帧，解码器永远开不了张。重开编码会话，
+     新连接立刻收到参数集 + IDR，当前屏幕必定能解出来。
+     3 秒冷却 + 总共最多 3 次，绝不反复折腾。 */
+  function pvHardReset() {
+    const t = performance.now();
+    if (t - PV.hardAt < 3000 || PV.heals >= 3) return;
+    PV.hardAt = t;
+    PV.heals++;
+    const keep = PV.heals;
+    pvStop();
+    PV.heals = keep;                 // pvStop 不清它，这里只是别被上面的重置带偏
+    pvStart();
+    clearInterval(PV.tickTimer);
+    PV.tickTimer = setInterval(pvTick, 800);
+    setTimeout(() => pvKick('heal', true), 250);
+  }
+
+  /* 画面卡死自救（原因见 PV.lastInAt 的注释）。分两级：
+     1. 先让服务端重开一次编码会话（/api/preview/kick），新的 IDR 一到解码器
+        就自己重新同步，不断连接、最多闪半秒；
+     2. 连续两次都救不回来才整条重建。
+     冷却 4 秒，绝不反复折腾。 */
+  function pvReconnect() {
+    const t = performance.now();
+    if (t - PV.reconnectAt < 4000) return;
+    PV.reconnectAt = t;
+    PV.healed++;
+    if (PV.kickTries >= 2) { PV.kickTries = 0; pvHardReset(); return; }
+    PV.kickTries = (PV.kickTries || 0) + 1;
+    pvKick('heal', true);
+  }
+
+  /* 让服务端重开一次编码会话，换一个新的 IDR 回来。实测 kick 后 445ms 就收到
+     SPS/PPS/IDR（43KB），解码器遇 IDR 自动重新同步，不用断连接、最多闪半秒。
+     冷却 1.5 秒：连续操作时不会每一帧都踢一次。 */
+  function pvKick(why, force) {
+    const t = performance.now();
+    if (t - PV.kickAt < (force ? 1200 : 1500)) return;
+    PV.kickAt = t;
+    PV.kicks = (PV.kicks || 0) + 1;
+    PV.kickWhy = why || '';
+    fetch(url('/api/preview/kick'), {
+      method: 'POST', cache: 'no-store', headers: { 'x-token': token },
+    }).catch(() => { /* 踢不出去也不致命，下一次输入恢复还会试 */ });
+  }
+
+  /* 采集源切换：只换解码器，不碰连接（连着的那条流还在，数据照旧进来） */
+  function pvSwapDecoder() {
+    if (PV.dec) { try { PV.dec.close(); } catch (e) {} }
+    if (PV.latest) { try { PV.latest.close(); } catch (e) {} PV.latest = null; }
+    PV.dec = null;
+    PV.cfgDone = false; PV.cfgBusy = false; PV.pend = null;
+    PV.sps = null; PV.pps = null;
+    PV.qts = [];
+    PV.dec = pvNewDecoder();
+    PV.painted = 0;
+    PV.startedAt = Date.now();        // 让 900ms/2.2s 那两条看门狗重新计时
+    clearTimeout(PV.openT);
+    PV.openT = setTimeout(() => { if (PV.on && !PV.painted) pvKick('swap', true); }, 900);
+    pvLed('切换采集源…');
+  }
+
+  function pvStop() {
+    if (PV.rafId) { try { cancelAnimationFrame(PV.rafId); } catch (e) {} PV.rafId = 0; }
+    if (PV.latest) { try { PV.latest.close(); } catch (e) {} PV.latest = null; }
+    PV.latestAt = -1;
+    if (PV.dec) { try { PV.dec.close(); } catch (e) {} }
+    PV.dec = null; PV.cfgDone = false; PV.sps = null; PV.pps = null;
+    PV.pend = null; PV.cfgBusy = false;
+    if (PV.ac) { try { PV.ac.abort(); } catch (e) {} PV.ac = null; }
+    clearInterval(PV.tickTimer); PV.tickTimer = 0;
+    clearInterval(PV.npTimer); PV.npTimer = 0;
+    clearTimeout(PV.openT); PV.openT = 0;
+    clearTimeout(PV.keyT); PV.keyT = 0;
+    PV.keyData = null; PV.keyRetry = 0; PV.retried = 0; PV.cfg = null;
+    PV.black = 0; PV.got = 0; PV.qts = [];
+    pvOverlay(false);
+    pvLed('');
+    try { pvCtx.fillStyle = '#000'; pvCtx.fillRect(0, 0, pvCanvas.width, pvCanvas.height); } catch (e) {}
+  }
+
+  /* 当前在放什么：黑屏时把「哪个应用 + 什么片子」盖上去。
+     三级回退见服务端 /api/nowplaying：媒体会话元数据 → Intent 里的文件名 → 应用名。 */
+  function pvIconSet(show) {
+    const box = $('#pvApp'), img = $('#pvAppIcon');
+    img.classList.toggle('hide', !show);
+    box.classList.toggle('noicon', !show);
+    if (!show) img.removeAttribute('src');
+  }
+
+  function pvAppTag(pkg, label) {
+    const box = $('#pvApp'), img = $('#pvAppIcon'), nm = $('#pvAppName');
+    const name = String(label || '').trim();
+    if (!name) { box.classList.add('hide'); return; }
+    nm.textContent = name;
+    box.classList.remove('hide');
+    if (!pkg) { PV.iconPkg = ''; pvIconSet(false); return; }
+    if (PV.iconPkg !== pkg) {
+      PV.iconPkg = pkg;
+      pvIconSet(true);
+      img.src = url('/api/icon/' + encodeURIComponent(pkg));
+    }
+  }
+
+  async function pvNow() {
+    if (PV.npBusy) return;
+    PV.npBusy = true;
+    try {
+      const r = await fetch(url('/api/nowplaying'), { cache: 'no-store', headers: { 'x-token': token } });
+      if (r.status === 401) return;
+      const d = await r.json();
+      const t = String(d.title || '').trim();
+      const label = String(d.appLabel || d.app || '').trim();
+      const kind = $('#pvKind'), title = $('#pvTitle'), sub = $('#pvSub');
+      pvLink('');   // 黑屏提示接管遮罩层，把「改用 HTTPS」那个链接收掉
+
+      if (d.playing) {
+        kind.textContent = '正在播放';
+        pvAppTag(d.app, label);
+        if (t) {
+          title.textContent = t;
+          title.classList.remove('hide');
+          sub.textContent = '视频画面由电视硬件层输出，无法采集';
+        } else {
+          // 有的播放器不写元数据、也没有文件路径：至少别留一个「—」
+          title.textContent = label ? '正在播放视频' : '电视正在播放视频';
+          title.classList.remove('hide');
+          sub.textContent = label
+            ? '这个应用没有公开片名 · 画面由电视硬件层输出'
+            : '视频画面由电视硬件层输出，无法采集';
+        }
+      } else {
+        kind.textContent = '暂无可采集画面';
+        pvAppTag('', '');
+        title.textContent = '画面全黑';
+        title.classList.remove('hide');
+        // 没在播但前台停着某个应用（选片页、菜单…）：说清楚是哪个，别让人以为连错设备
+        const fgPkg = String(d.app || '');
+        const fg = String(d.appLabel || '').trim();
+        const atHome = !fgPkg || /launcher|home|\.tv$/i.test(fgPkg);
+        sub.textContent = (!atHome && fg)
+          ? '当前前台：' + fg + ' · 画面暂时没有变化'
+          : '电视可能待机、屏保中，或画面暂时没有变化';
+      }
+    } catch (e) {
+      /* 拿不到就不更新，保持上一次的标题 */
+    } finally { PV.npBusy = false; }
+  }
+
+  function pvIsBlack() {
+    try {
+      pvProbeCtx.drawImage(pvCanvas, 0, 0, pvProbe.width, pvProbe.height);
+      const d = pvProbeCtx.getImageData(0, 0, pvProbe.width, pvProbe.height).data;
+      let max = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const v = d[i] > d[i + 1] ? (d[i] > d[i + 2] ? d[i] : d[i + 2]) : (d[i + 1] > d[i + 2] ? d[i + 1] : d[i + 2]);
+        if (v > max) max = v;
+        if (max > 24) return false;
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function pvTick() {
+    const now = Date.now();
+    if (now - PV.fpsAt >= 1500) {
+      PV.fps = Math.round((PV.frames * 1000) / (now - PV.fpsAt));
+      PV.frames = 0; PV.fpsAt = now;
+      const ver = PV.ver ? ' · ' + PV.ver : '';
+      let tail = '', q = '';
+      if (PV.cfgDone) {
+        /* 用分位数而不是均值：均值会把偶发的几秒积压抹平，看不到"波动"。
+           p50 = 常态排队，p95 = 卡的时候什么样，一眼就能判断。 */
+        const a = PV.lagList;
+        if (a.length) {
+          a.sort((x, y) => x - y);
+          PV.lag50 = Math.round(a[a.length >> 1]);
+          PV.lag95 = Math.round(a[Math.min(a.length - 1, Math.floor(a.length * 0.95))]);
+          PV.lagPeak = Math.round(a[a.length - 1]);
+        }
+        PV.lagList = [];
+        tail = PV.lag50 >= 0 ? ' · ' + PV.lag50 + '~' + PV.lag95 + 'ms' : '';
+        /* Q = 解码器里还排着多少帧（正常 0~2）。它一涨就说明解码跟不上输入，
+           不是网络问题——留在徽标上一个数字就能判断，不用开控制台。 */
+        q = PV.qPeak > 4 ? ' · Q' + PV.qPeak : '';
+      }
+      /* 四种状态分开说，别再用一个 "0 fps" 糊弄：
+         ⓪ 还没画出过任何一帧 → 「等待首帧」，跟「静止」严格区分开
+            （以前一律显示静止，看起来像正常现象，其实是黑屏）；
+         ① 帧到了却一帧都没解出来 → 报 收/解，这是「画面不刷新」的病根；
+         ② 有帧在画 → 正常，报帧率和延迟分位数；
+         ③ 一个字节都没来 → 静止期（编码器变帧率，画面不动就不出帧），不是故障。 */
+      if (!PV.painted) {
+        pvLed('等待首帧' + (PV.in ? ' · 收到 ' + PV.in + ' 帧' : '') + ver);
+      } else if (PV.in && !PV.got) {
+        pvLed('收到 ' + PV.in + ' 帧解不出' + ver);
+      } else {
+        pvLed((PV.fps ? PV.fps + ' fps' : '静止') + tail + q);
+      }
+      PV.in = 0; PV.got = 0;
+      PV.qPeak = 0;
+    }
+    /* 打开预览后一直没画面 —— 单独判一次，**不依赖 cfgDone**。
+       老代码把 cfgDone 当门槛，结果「接上一条已经在跑的流、只补到 SPS/PPS
+       却永远等不到 IDR」这种情形 cfgDone 一直是 false，看门狗永远不触发，
+       画面就一直黑着（服务端首帧实测 409ms，不是这边的锅）。
+       2.2 秒还画不到 canvas 上就重建一次：重开会话能拿到新的 [SPS/PPS/IDR]，
+       用户不用去按键「唤醒」它。 */
+    if (!PV.painted && now - PV.startedAt > 2200) pvHardReset();
+
+    /* 卡死自救。判据：**一直在收数据，却 1.2 秒没把任何一帧画到 canvas 上**。
+       画面静止时服务端根本不发数据，走不到这里，所以不会误伤正常静止；
+       看电视黑屏同理（编码器不出帧）。「收得到但画不出」才是真卡死——
+       典型就是首页最近应用那一列：一次切换只出 3 帧、第一帧才 535B 的 P 帧，
+       硬件解码器直接吃掉，画面定在旧内容上。 */
+    if (now - PV.startedAt > 3000) {
+      const t = performance.now();
+      if (t - PV.lastDataAt < 900 && t - PV.lastPaintAt > 1200) pvReconnect();
+    }
+    // 判断黑屏前给个宽限期：刚打开时 canvas 本来就是黑的。
+    // 不放「必须先收到 N 帧」——播视频时编码器可能只吐一两帧（画面全黑又不动），
+    // 那样永远凑不够帧数，标题就永远出不来（这个坑踩过）。
+    const ready = PV.cfgDone || Date.now() - PV.startedAt > 2200;
+    const black = ready && pvIsBlack();
+    PV.black = black ? PV.black + 1 : 0;
+    const show = PV.black >= 2;
+    const isShow = $('#pvOver').classList.contains('show');
+    if (show) {
+      if (!isShow) { $('#pvKind').textContent = '正在播放'; pvOverlay(true); }
+      if (!PV.npTimer) {
+        pvNow();
+        PV.npTimer = setInterval(pvNow, 4000);
+      }
+    } else if (isShow) {
+      pvOverlay(false);
+      clearInterval(PV.npTimer); PV.npTimer = 0;
+    }
+  }
+
+  function pvSet(on, silent, keepPref) {
+    PV.on = !!on;
+    /* keepPref：ADB 掉线（电视待机）时自动收起，别把用户的开关偏好也改掉，
+       否则电视睡一觉再醒，预览就永久关着了 */
+    if (!keepPref) localStorage.setItem('tvPrev', on ? '1' : '0');
+    $('#btnPrev').classList.toggle('on', PV.on);
+    $('#pvCard').classList.toggle('show', PV.on);
+    pvStop();
+    if (PV.on) {
+      PV.heals = 0; PV.hardAt = 0; PV.kickTries = 0;   // 手动开关算重新开始，自愈次数重新计
+      pvStart();
+      PV.tickTimer = setInterval(pvTick, 800);
+    }
+    if (!silent) buzz(8);
+  }
+
+  $('#btnPrev').addEventListener('click', () => {
+    if ($('#btnPrev').disabled) {
+      toast('无法预览：需要 ADB，或在电视上装 flowrec.apk（App 通道不依赖 ADB）');
+      return;
+    }
+    pvSet(!PV.on);
+  });
+  /* 切到后台就停：预览很吃电视 CPU（480p 约 1.7 核），锁屏/切走时没必要白烧 */
+  document.addEventListener('visibilitychange', () => {
+    if (!PV.on) return;
+    if (document.hidden) { pvStop(); }
+    else if (!PV.dec) { pvStart(); PV.tickTimer = setInterval(pvTick, 800); }
+  });
+  if (PV.on) {
+    $('#btnPrev').classList.add('on');
+    $('#pvCard').classList.add('show');
+    pvStart();
+    PV.tickTimer = setInterval(pvTick, 800);
+  }
+
+  /* ---------- 启动 ---------- */
+  /* 连点电视名三下 → 显示界面版本。
+     群里/群晖部署最常见的问题是"改了代码重建了，手机上还是老界面"，
+     手机端没法 curl，所以留一个不用开发者工具的出口：看到的版本号和服务端
+     /api/health 里的 ver 一致，说明页面确实是新的，剩下就是缓存或旧容器的问题。 */
+  (function verProbe() {
+    const el = $('#tvName');
+    if (!el) return;
+    let n = 0, t = 0;
+    el.addEventListener('click', async () => {
+      const now = Date.now();
+      n = now - t < 900 ? n + 1 : 1;
+      t = now;
+      if (n < 3) return;
+      n = 0;
+      const uiVer = document.querySelector('meta[name="app-ver"]');
+      let srv = '';
+      try {
+        const r = await fetch(url('/api/health'), { cache: 'no-store' });
+        const d = await r.json();
+        srv = ' · 服务端 ' + (d.ver || '旧版无指纹');
+      } catch (e) { srv = ' · 服务端无响应'; }
+      toast('界面 ' + (uiVer ? uiVer.content : '无指纹') + srv);
+    });
+  })();
+
+  (async () => { await loadStatus(); })();
+  setInterval(loadStatus, 5000);
+})();
+</script>
+</body>
+</html>

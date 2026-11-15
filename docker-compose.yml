@@ -1,0 +1,105 @@
+# 群晖 Container Manager（DSM 7.2）用法：
+#   1. 把这几个文件传到 NAS，例如 /volume1/docker/tv-remote：
+#      server.js  apkicon.js  public/  vendor/  Dockerfile  本文件
+#   2. Container Manager → 项目 → 新增 → 选择该路径 → 下一步 → 完成（会自动 build）
+#   3. 或者 SSH：cd /volume1/docker/tv-remote && docker compose up -d --build
+#
+# 详细步骤（含电视二次授权、排障表）见 群晖部署.md
+#
+# 想改成桥接网络也行：把 network_mode: host 换成 ports: ["8787:8787"]，
+# 此时必须填 LAN_SUBNET，否则容器找不到电视所在的网段。
+
+services:
+  tv-remote:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 换 Debian 软件源规避国内 NAS 拉 deb.debian.org 超时。
+        # 网络能直连官方源、或在国外部署时，把这行删掉即可。
+        DEBIAN_MIRROR: "mirrors.aliyun.com"
+    image: tv-remote:latest
+    container_name: tv-remote
+    restart: unless-stopped
+
+    # 宿主机网络：容器直接看到家里的局域网，能自动发现电视、ADB 也不折腾端口映射
+    network_mode: host
+
+    environment:
+      # 电视的 adb 地址：示例值，务必改成你电视的 IP（IP 变了会自己扫网段找回）
+      TV_ADB: "192.168.1.50:5555"
+      PORT: "8787"
+      # 实时预览必须在「安全上下文」里才用得上 WebCodecs：用 http://192.168.x.x
+      # 打开时 window.VideoDecoder 直接是 undefined（本机实测 Edge 156 / Chrome 155
+      # 完全一致，跟浏览器品牌无关）。8788 是同一份服务的 HTTPS 入口，
+      # 证书自签、首次访问点「高级 → 继续前往」即可。
+      # 设成 "0" 关闭：此时预览只在 localhost 下有效（或靠 NAS 反向代理给的 https）。
+      HTTPS_PORT: "8788"
+      # 建议设置：外网/VPN 访问时防止被同网段其他人乱点；留空 = 不鉴权
+      # 暴露到公网前务必改成一个随机长令牌（见 .env.example / README）
+      AUTH_TOKEN: ""
+      # 电视端投屏 App（vendor/tvcast.apk）推流进来的端口。装了它，预览就
+      # 不再依赖 ADB（关掉 ADB 调试、只剩索尼 IP 控制时照样有画面），
+      # 而且关键帧间隔自己说了算（1 秒一个），不再看 screenrecord 的心情。
+      # 不装 App 就完全不受影响；设成 "0" 可关闭这个通道。
+      CAST_PORT: "8790"
+      # 自动发现电视时扫描的网段（留空=自动，取 NAS 自身网段）
+      LAN_SUBNET: ""
+      # 电视 DHCP 换 IP 后自动扫网段找回 5555 端口的设备。
+      # 设成 "0" 可彻底关掉：局域网里开着远程 ADB 的模拟器（雷电/MuMu/夜神都监听
+      # 0.0.0.0:5555）会被扫到，虽然新版会验明正身（认 characteristics 含 tv 的才认），
+      # 但电视 IP 固定的话直接关掉最省事。
+      DISCOVER: "1"
+
+      # 索尼 IP 控制密钥（可选）。填了之后，电视关掉 ADB 调试时按键会自动改走
+      # 80 端口的 /sony/IRCC，仍然能遥控：方向 / 音量 / 电源 / 主页 / 返回 / 设置 都可用，
+      # 应用列表也走 appControl（getApplicationList / setActiveApp），
+      # 只有中文输入要 adb。
+      # 电视上：设置 → 网络和互联网 → 家庭网络设置 → IP 控制 → 认证选「普通和预共享密钥」，
+      # 密钥填什么这里就填什么；认证选「普通」（不要密钥）也能用，程序会自己探测。
+      # 不用 IP 控制 / 没设预共享密钥就留空。
+      SONY_PSK: ""
+      # 个别固件按键名对不上时用来重映射（键是 Android 键码，值是电视报的 IRCC 名）。
+      # 例：OK 键改发 Enter、语音键改发 Assists →  IRCC_KEYS: '{"66":"Enter","219":"Assists"}'
+      # IRCC_KEYS: '{}'
+
+      # 画面预览（左上角眼睛图标开关，默认关）。480p 在 4 核的 MT5895 上要吃掉约 1.7 核，
+      # 720p 只有 20 fps 反而更糊更卡，不建议升；码率 2.5 Mbps 在局域网已经够清楚。
+      # 尺寸必须都是 16 的倍数：854x480 会让电视补出 16 行绿条（实测），848x480 才干净。
+      # PREVIEW_SIZE: "848x480"
+      # PREVIEW_BITRATE: "2500000"
+      # 这台索尼的 screenrecord 把全范围(0~255)画面标成 limited，解出来暗部压黑；
+      # 默认已自动纠正。换到标得正确的电视时设 limited 关掉纠正。
+      # PREVIEW_RANGE: "auto"
+      TZ: "Asia/Shanghai"
+      HOME: "/app/data"
+      DATA_DIR: "/app/data"
+
+      # 语音搜片：说的是哪个桌面的搜索 action。
+      # 装的是当贝桌面就用默认值；用别的桌面改成对应 action，或者留空让它退化成“打字到输入框”。
+      SEARCH_ACTION: "com.dangbei.intent.search"
+
+      # 语音识别（可选）。手机浏览器自带语音识别不可用时才会用到它。
+      # 填任意 OpenAI 兼容的 /v1/audio/transcriptions 地址，例如 NAS 上跑的 whisper：
+      #   ASR_URL: "http://127.0.0.1:9000/v1/audio/transcriptions"
+      #   ASR_KEY: "随便一串"
+      #   ASR_MODEL: "whisper-1"
+      ASR_URL: ""
+      ASR_KEY: ""
+      ASR_MODEL: "whisper-1"
+
+    volumes:
+      # adb 授权密钥 + 原输入法记录，必须持久化
+      - ./data:/app/data
+
+      # ↓ 代码挂载（更新用，强烈建议留着）
+      # 把宿主机上的源码直接映射进容器，覆盖镜像里那份。
+      # 好处：以后改界面/改服务端，只要「传文件 + 重启容器」，
+      #      不用重建镜像，也不用删项目重建（镜像里 apt 装的 adb 那一层也不会重跑）。
+      # 注意：改了 Dockerfile、或换了 vendor/ADBKeyboard.apk，仍然要 --build 一次。
+      - ./server.js:/app/server.js:ro
+      - ./apkicon.js:/app/apkicon.js:ro
+      - ./public:/app/public:ro
+      # 自绘图标（assets/icon-livetv.png）：两个「电视直播」的原始图标
+      # 一个太小、一个电视根本不给，服务端会优先返回这份
+      - ./assets:/app/assets:ro
