@@ -6,6 +6,27 @@
 
 **关于实时预览**：走 ADB `screenrecord` 抓 H.264 流，服务端只做拆帧，浏览器用 **WebCodecs** 解码画到 canvas。受系统 DRM 保护，**加密版权内容（Netflix / Disney+ / 爱奇艺 DRM 片源等）在预览里会是黑屏或不显示**，这是电视系统本身的行为，不是本项目的 bug。日常桌面、设置、应用列表、无 DRM 的视频都能正常预览。
 
+## 界面预览
+
+手机浏览器里的实际效果（PWA 竖屏，点击图片可看大图）。左为待机时的纯遥控界面，右为开机并开启实时预览后的界面 —— 页面顶部会同步显示电视当前画面：
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <a href="assets/tv-remote.jpg"><img src="assets/tv-remote.jpg" width="300" alt="待机时的遥控界面"></a>
+      <br><b>待机 · 纯遥控器</b>
+      <br><sub>电视未开机，方向键 / 应用 / 菜单 / 文字输入等按键布局</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="assets/tv-remote2.jpg"><img src="assets/tv-remote2.jpg" width="300" alt="开机并开启实时预览的界面"></a>
+      <br><b>开机 · 实时预览</b>
+      <br><sub>顶部小窗同步显示电视当前画面，下方仍是同一套遥控器</sub>
+    </td>
+  </tr>
+</table>
+
+> 实时预览走 ADB `screenrecord` + WebCodecs，DRM 加密片源会黑屏；预览画面里的延迟读数会随网络/电视负载变化。
+
 ---
 
 ## 功能
